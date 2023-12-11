@@ -1,29 +1,63 @@
-Для бота необходимо:
+# JiraTelegramJS
 
-1. sudo apt-get update && sudo apt-get upgrade -y
+## Обзор
+JiraTelegramJS - это инструмент для интеграции Jira с Telegram, позволяющий получать уведомления о событиях в Jira непосредственно в Telegram.
 
-2. sudo apt install git
-3. git clone https://github.com/zverstal/JiraTelegramJS
+## Начало работы
 
-4. sudo apt-get install -y ca-certificates curl gnupg
-5. sudo mkdir -p /etc/apt/keyrings
-6. curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+### Предварительные требования
+- `git`
+- `Node.js` (версия 21.x)
+- `npm`
+- Telegram Bot API ключ
+- Jira Personal Access Token
 
-7. NODE_MAJOR=21
+### Установка и настройка
+
+1. **Обновление системы**
+   ```bash
+   sudo apt-get update && sudo apt-get upgrade -y
+2. **Установка Git**
+   ```bash
+   sudo apt install git
+3. **Клонирование репозитория**
+   ```bash
+   git clone https://github.com/zverstal/JiraTelegramJS
+4. **Установка необходимых инструментов**
+   ```bash
+sudo apt-get install -y ca-certificates curl gnupg
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+
+NODE_MAJOR=21
 echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" | sudo tee /etc/apt/sources.list.d/nodesource.list
 
-8. 
-sudo apt-get update
-sudo apt-get install nodejs -y
 
-9. npm i
+5. **Установка NodeJS**
+   ```bash
+   sudo apt-get update
+   sudo apt-get install nodejs -y
 
-10. 
-touch .env
-nano .env:
-BOT_API_KEY='API_ключ_бота'
-JIRA_PAT='API_ключ_Jira'
+6. **Установка зависимостей**
+   ```bash
+   cd JiraTelegramJS
+   npm i
 
-11. npm i pm2 -g
+7. **Переменные окружения**
+   ```bash
+   touch .env
+   sudo nano .env
+   BOT_API_KEY='API_ключ_бота'
+   JIRA_PAT='API_ключ_Jira'
 
-12. pm2 start index.js
+8. **Установка PM2**
+    ```bash
+    sudo npm i pm2 -g
+
+9. **Старт проекта**
+   ```bash
+   pm2 start index.js
+
+
+
+
