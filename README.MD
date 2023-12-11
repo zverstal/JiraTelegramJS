@@ -57,7 +57,3 @@ JiraTelegramJS - это инструмент для интеграции Jira с
 9. **Старт проекта**
    ```bash
    pm2 start index.js
-
-
-
-
