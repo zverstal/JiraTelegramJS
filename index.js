@@ -1,10 +1,29 @@
 require('dotenv').config();
 const { Bot, InlineKeyboard } = require('grammy');
 const axios = require('axios');
+const sqlite3 = require('sqlite3').verbose();
 
 const bot = new Bot(process.env.BOT_API_KEY);
+const db = new sqlite3.Database('tasks.db');
 
-// Функция для получения эмодзи по приоритету задачи
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        priority TEXT,
+        department TEXT,
+        lastSent DATE
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS user_actions (
+        username TEXT,
+        taskId TEXT,
+        action TEXT,
+        timestamp DATE,
+        FOREIGN KEY(taskId) REFERENCES tasks(id)
+    )`);
+});
+
 function getPriorityEmoji(priority) {
     const emojis = {
         Blocker: '🚨',
@@ -15,30 +34,7 @@ function getPriorityEmoji(priority) {
     return emojis[priority] || '';
 }
 
-async function fetchJiraTasks() {
-    try {
-        const response = await axios.get('https://jira.sxl.team/rest/api/2/search', {
-            headers: {
-                'Authorization': `Bearer ${process.env.JIRA_PAT}`,
-                'Accept': 'application/json'
-            },
-            params: {
-                jql: 'project = SUPPORT AND (Отдел = "Техническая поддержка" or Отдел = "QA" or Отдел = "Sportsbook") and status = "Open"'
-            }
-        });
-
-        return response.data.issues.map(issue => ({
-            id: issue.key, // 'key' задачи
-            title: issue.fields.summary,
-            priority: issue.fields.priority.name,
-        }));
-    } catch (error) {
-        console.error('Error fetching Jira tasks:', error);
-        return [];
-    }
-}
-
-async function getTaskDetails(taskId) {
+async function fetchJiraTaskStatus(taskId) {
     try {
         const response = await axios.get(`https://jira.sxl.team/rest/api/2/issue/${taskId}`, {
             headers: {
@@ -46,57 +42,90 @@ async function getTaskDetails(taskId) {
                 'Accept': 'application/json'
             }
         });
-
-        return response.data; // Возвращает полный объект задачи
+        return response.data.fields.status.name;
     } catch (error) {
-        console.error('Error fetching Jira task details:', error);
+        console.error('Error fetching Jira task status:', error);
         return null;
     }
 }
 
-
-
-const sentTasks = new Map();
-
 async function sendJiraTasks(ctx) {
-    const tasks = await fetchJiraTasks();
-    const now = new Date();
+    const isWeekend = [0, 6].includes(new Date().getDay());
+    const query = `SELECT * FROM tasks WHERE ${isWeekend ? 'department = "Техническая поддержка"' : '1=1'} AND lastSent < datetime("now", "-3 days")`;
 
-    for (const task of tasks) {
-        const lastSentTime = sentTasks.get(task.id);
-        const timeDiff = now - lastSentTime;
-
-        if (!lastSentTime || timeDiff > 86400000) {
-            const taskDetails = await getTaskDetails(task.id);
-
-            if (taskDetails) {
-                const department = taskDetails.fields.customfield_10500 ? taskDetails.fields.customfield_10500.value : 'Не указан';
-                const keyboard = new InlineKeyboard();
-
-                if (department === "Техническая поддержка") {
-                    keyboard.text('Взять в работу', `take_task:${task.id}`);
-                } else if (department === "QA") {
-                    keyboard.text('В курсе', `aware_task:${task.id}`);
-                }
-                else if (department === "Sportsbook") {
-                    keyboard.text('В курсе', `aware_task:${task.id}`);
-                }
-
-                const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${department}`;
-                ctx.reply(messageText, { reply_markup: keyboard });
-                sentTasks.set(task.id, now);
-            }
+    db.all(query, [], async (err, rows) => {
+        if (err) {
+            throw err;
         }
-    }
+        for (const task of rows) {
+            const currentStatus = await fetchJiraTaskStatus(task.id);
+            if (!currentStatus || currentStatus !== 'Open') {
+                db.run('DELETE FROM tasks WHERE id = ?', [task.id]);
+                continue;
+            }
+
+            const keyboard = new InlineKeyboard()
+                .text('Взять в работу', `take_task:${task.id}`)
+                .text('В курсе', `aware_task:${task.id}`);
+
+            const messageText = `Задача: ${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}`;
+            await ctx.reply(messageText, { reply_markup: keyboard });
+
+            db.run('UPDATE tasks SET lastSent = ? WHERE id = ?', [new Date(), task.id]);
+        }
+    });
 }
 
+bot.command('start', async (ctx) => {
+    await ctx.reply('Привет! Я буду присылать новые задачи каждый день.');
+    sendJiraTasks(ctx);
+    setInterval(() => sendJiraTasks(ctx), 86400000); // 24 часа
+});
 
+const usernameMappings = {
+    "lipchinski": "Дмитрий Селиванов",
+    "YurkovOfficial": "Пётр Юрков",
+    "Jlufi": "Даниил Маслов",
+    "EuroKaufman": "Даниил Баратов"
+};
+
+bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
+    const taskId = ctx.match[1];
+    const success = await updateJiraTaskStatus(taskId);
+    if (success) {
+        const username = usernameMappings[ctx.from.username] || ctx.from.username;
+        await ctx.editMessageText(`Задача ${taskId} взята в работу пользователем ${username}.`);
+        db.run('INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)', [ctx.from.username, taskId, 'take_task', new Date()]);
+    } else {
+        await ctx.reply(`Не удалось взять задачу ${taskId} в работу. Попробуйте снова.`);
+    }
+});
+
+
+bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
+    const taskId = ctx.match[1];
+    db.run('INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)', [ctx.from.username, taskId, 'aware_task', new Date()]);
+
+    // Получение списка пользователей, отметивших задачу как 'в курсе'
+    db.all('SELECT DISTINCT username FROM user_actions WHERE taskId = ? AND action = "aware_task"', [taskId], (err, rows) => {
+        if (err) {
+            console.error('Error fetching aware users:', err);
+            return;
+        }
+        const awareUsers = rows.map(row => usernameMappings[row.username] || row.username).join(', ');
+        const updatedMessage = `Специалисты в курсе задачи: ${awareUsers}`;
+        
+        // Обновление сообщения
+        ctx.editMessageText(updatedMessage);
+    });
+
+    db.run('UPDATE tasks SET lastSent = datetime("now", "+3 days") WHERE id = ?', [taskId]);
+});
 
 
 async function updateJiraTaskStatus(taskId) {
     try {
         const transitionId = '221'; // Замените на актуальный ID
-
         const transitionResponse = await axios.post(`https://jira.sxl.team/rest/api/2/issue/${taskId}/transitions`, {
             transition: {
                 id: transitionId
@@ -107,81 +136,11 @@ async function updateJiraTaskStatus(taskId) {
                 'Content-Type': 'application/json'
             }
         });
-
         return transitionResponse.status === 204;
     } catch (error) {
         console.error('Error updating Jira task:', error);
         return false;
     }
 }
-
-const usernameMappings = {
-    "lipchinski": "Дмитрий Селиванов",
-    "YurkovOfficial": "Пётр Юрков",
-    "Jlufi": "Даниил Маслов",
-    "EuroKaufman": "Даниил Баратов"
-};
-
-
-
-bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
-    const taskId = ctx.match[1];
-    const task = await getTaskDetails(taskId);
-
-    if (task && task.fields.customfield_10500 && task.fields.customfield_10500.value === "Техническая поддержка") {
-        const success = await updateJiraTaskStatus(taskId);
-        if (success) {
-            const displayName = usernameMappings[ctx.from.username] || ctx.from.username;
-            await ctx.editMessageText(`Задача ${taskId} взята в работу пользователем ${displayName}\nСсылка: https://jira.sxl.team/browse/${task.key}.`, { reply_markup: { inline_keyboard: [] } });
-        } else {
-            await ctx.reply(`Не удалось обновить статус задачи ${taskId}. Попробуйте снова.`);
-        }
-    } else {
-        await ctx.editMessageText(`Задача ${taskId} не может быть взята в работу через этот бот. Эта задача для отдела QA`, { reply_markup: { inline_keyboard: [] } });
-    }
-});
-
-const awareTaskCounts = new Map();
-
-bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
-    const taskId = ctx.match[1];
-    const username = ctx.from.username;
-
-    if (!awareTaskCounts.has(taskId)) {
-        awareTaskCounts.set(taskId, new Set());
-    }
-
-    const usersAware = awareTaskCounts.get(taskId);
-
-    if (usersAware.has(username)) {
-        return; // User already acknowledged
-    }
-
-    usersAware.add(username);
-
-    const task = await getTaskDetails(taskId);
-    const department = task.fields.customfield_10500 ? task.fields.customfield_10500.value : 'Не указан';
-
-    let messageText = `Задача: ${task.key}\nСсылка: https://jira.sxl.team/browse/${task.key}\nОписание: ${task.fields.summary}\nПриоритет: ${getPriorityEmoji(task.fields.priority.name)}\nОтдел: ${department}\n\nПользователи в курсе задачи: `;
-    messageText += Array.from(usersAware).map(username => usernameMappings[username] || username).join(', ');
-
-    if (usersAware.size >= 3) {
-        await ctx.editMessageText(messageText, { reply_markup: { inline_keyboard: [] } });
-    } else {
-        await ctx.editMessageText(messageText, { reply_markup: ctx.callbackQuery.message.reply_markup });
-    }
-});
-
-// Обработка команды start
-bot.command('start', async (ctx) => {
-    await ctx.reply('Привет! Каждую минуту я буду проверять новые задачи.\nВажно: задачи отделов QA и Sportsbook в работу пока брать нельзя, только просматривать');
-    await sendJiraTasks(ctx);
-
-    // Установка интервала для регулярной проверки задач
-    setInterval(async () => {
-        await sendJiraTasks(ctx);
-    }, 60000);  // 60000 миллисекунд = 1 минута
-});
-
 
 bot.start();
