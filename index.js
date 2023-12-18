@@ -222,36 +222,21 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Получаем список пользователей, осведомленных о задаче
+            // Добавляем или обновляем запись пользователя в базе данных
+            db.run('INSERT OR IGNORE INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)', [username, taskId, 'aware_task', getMoscowTimestamp()]);
+
+            // Получаем обновленный список пользователей, осведомленных о задаче
             db.all('SELECT DISTINCT username FROM user_actions WHERE taskId = ? AND action = "aware_task"', [taskId], async (selectErr, users) => {
                 if (selectErr) {
                     console.error('Ошибка при получении списка пользователей:', selectErr);
                     return;
                 }
 
-                const awareUsers = Array.isArray(users) ? users : [];
-                const updatedAwareUsersList = awareUsers.map(row => usernameMappings[row.username] || row.username).join(', ');
-
-                // Проверяем, отмечал ли этот пользователь задачу как 'в курсе' ранее
-                const isUserAware = awareUsers.some(row => row.username === username);
-
-                if (!isUserAware) {
-                    // Добавляем запись в базу данных
-                    db.run('INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)', [username, taskId, 'aware_task', getMoscowTimestamp()]);
-                } else {
-                    // Если пользователь уже отмечал задачу, игнорируем повторное нажатие
-                    ctx.answerCallbackQuery('Вы уже отметили эту задачу как просмотренную.');
-                    return;
-                }
-
-                if (updatedAwareUsersList !== awareUsers.map(row => row.username).join(', ')) {
-                    const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи: ${updatedAwareUsersList}`;
-                    const replyMarkup = awareUsers.length >= 3 ? undefined : ctx.callbackQuery.message.reply_markup;
-                    await ctx.editMessageText(messageText, { reply_markup: replyMarkup });
-                } else {
-                    // Если список не изменился, ответ на колбэк-запрос без изменения сообщения
-                    ctx.answerCallbackQuery();
-                }
+                const awareUsersList = users.map(u => usernameMappings[u.username] || u.username).join(', ');
+                
+                const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи: ${awareUsersList}`;
+                const replyMarkup = users.length >= 3 ? undefined : ctx.callbackQuery.message.reply_markup;
+                await ctx.editMessageText(messageText, { reply_markup: replyMarkup });
             });
         });
     } catch (error) {
