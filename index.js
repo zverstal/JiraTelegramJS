@@ -179,7 +179,11 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
                 const success = await updateJiraTaskStatus(taskId);
                 if (success) {
                     const displayName = usernameMappings[ctx.from.username] || ctx.from.username;
-                    await ctx.editMessageText(`Задача ${taskId} взята в работу пользователем ${displayName}\nСсылка: https://jira.sxl.team/browse/${taskId}.`, { reply_markup: { inline_keyboard: [] } });
+
+                    // Формируем текст сообщения с полными деталями задачи
+                    const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nВзял в работу: ${displayName}`;
+
+                    await ctx.editMessageText(messageText, { reply_markup: { inline_keyboard: [] } });
 
                     db.run('INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)',
                         [ctx.from.username, taskId, 'take_task', getMoscowTimestamp()]);

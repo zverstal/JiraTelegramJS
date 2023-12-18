@@ -54,6 +54,10 @@ JiraTelegramJS - это инструмент для интеграции Jira с
     ```bash
     sudo npm i pm2 -g
 
-9. **Старт проекта**
+9. **Установка sqlite3**
+    ```bash
+    sudo install sqlite3    
+
+10. **Старт проекта**
    ```bash
    pm2 start index.js
