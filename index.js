@@ -222,37 +222,36 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Проверяем, отмечал ли этот пользователь задачу как 'в курсе' ранее
-            db.get('SELECT * FROM user_actions WHERE username = ? AND taskId = ? AND action = "aware_task"', [username, taskId], async (err, row) => {
-                if (err) {
-                    console.error('Ошибка при запросе к базе данных:', err);
+            // Получаем список пользователей, осведомленных о задаче
+            db.all('SELECT DISTINCT username FROM user_actions WHERE taskId = ? AND action = "aware_task"', [taskId], async (selectErr, users) => {
+                if (selectErr) {
+                    console.error('Ошибка при получении списка пользователей:', selectErr);
                     return;
                 }
 
-                if (row) {
+                const awareUsers = Array.isArray(users) ? users : [];
+                const updatedAwareUsersList = awareUsers.map(row => usernameMappings[row.username] || row.username).join(', ');
+
+                // Проверяем, отмечал ли этот пользователь задачу как 'в курсе' ранее
+                const isUserAware = awareUsers.some(row => row.username === username);
+
+                if (!isUserAware) {
+                    // Добавляем запись в базу данных
+                    db.run('INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)', [username, taskId, 'aware_task', getMoscowTimestamp()]);
+                } else {
                     // Если пользователь уже отмечал задачу, игнорируем повторное нажатие
                     ctx.answerCallbackQuery('Вы уже отметили эту задачу как просмотренную.');
                     return;
                 }
 
-                // Добавляем запись в базу данных
-                db.run('INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)', [username, taskId, 'aware_task', getMoscowTimestamp()]);
-
-                // Обновляем список пользователей, осведомленных о задаче
-                db.all('SELECT DISTINCT username FROM user_actions WHERE taskId = ? AND action = "aware_task"', [taskId], async (selectErr, users) => {
-                    if (selectErr) {
-                        console.error('Ошибка при получении списка пользователей:', selectErr);
-                        return;
-                    }
-
-                    // Преобразуем результат в массив, если он им не является
-                    const awareUsers = Array.isArray(users) ? users : [];
-                    const awareUsersList = awareUsers.map(row => usernameMappings[row.username] || row.username).join(', ');
-
-                    const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи: ${awareUsersList}`;
+                if (updatedAwareUsersList !== awareUsers.map(row => row.username).join(', ')) {
+                    const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи: ${updatedAwareUsersList}`;
                     const replyMarkup = awareUsers.length >= 3 ? undefined : ctx.callbackQuery.message.reply_markup;
                     await ctx.editMessageText(messageText, { reply_markup: replyMarkup });
-                });
+                } else {
+                    // Если список не изменился, ответ на колбэк-запрос без изменения сообщения
+                    ctx.answerCallbackQuery();
+                }
             });
         });
     } catch (error) {
@@ -260,6 +259,7 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
         await ctx.reply('Произошла ошибка при обработке вашего запроса.');
     }
 });
+
 
 
 async function updateJiraTaskStatus(taskId) {
