@@ -229,14 +229,12 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
                     return;
                 }
 
-                let userAlreadyAware = false;
-                if (row) {
-                    // Если пользователь уже отмечал задачу, сообщаем об этом
-                    userAlreadyAware = true;
-                    ctx.answerCallbackQuery('Вы уже отметили эту задачу как просмотренную.');
-                } else {
+                if (!row) {
                     // Добавляем запись в базу данных
                     await db.run('INSERT OR IGNORE INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)', [username, taskId, 'aware_task', getMoscowTimestamp()]);
+                } else {
+                    // Если пользователь уже отмечал задачу, сообщаем об этом
+                    ctx.answerCallbackQuery('Вы уже отметили эту задачу как просмотренную.');
                 }
 
                 // Получаем обновленный список пользователей, осведомленных о задаче
@@ -247,11 +245,12 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
                     }
 
                     const awareUsersList = users.map(u => usernameMappings[u.username] || u.username).join(', ');
-                    const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи: ${awareUsersList}`;
+                    const lastUpdated = new Date().toLocaleTimeString(); // Временная метка последнего обновления
+                    const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи: ${awareUsersList}\n\nПоследнее обновление: ${lastUpdated}`;
                     const replyMarkup = users.length >= 3 ? undefined : ctx.callbackQuery.message.reply_markup;
 
-                    // Обновляем текст сообщения, даже если пользователь уже в списке
-                    await ctx.editMessageText(messageText + '', { reply_markup: replyMarkup });
+                    // Обновляем текст сообщения с добавлением временной метки
+                    await ctx.editMessageText(messageText, { reply_markup: replyMarkup });
                 });
             });
         });
