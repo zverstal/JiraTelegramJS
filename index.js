@@ -234,7 +234,7 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
                     // Если пользователь уже отмечал задачу, сообщаем об этом
                     userAlreadyAware = true;
                     ctx.answerCallbackQuery('Вы уже отметили эту задачу как просмотренную.');
-                    const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи: ${awareUsersList} `;
+                    const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи:`;
                 } else {
                     // Добавляем запись в базу данных
                     await db.run('INSERT OR IGNORE INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)', [username, taskId, 'aware_task', getMoscowTimestamp()]);
