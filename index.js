@@ -156,7 +156,8 @@ const usernameMappings = {
     "lipchinski": "Дмитрий Селиванов",
     "YurkovOfficial": "Пётр Юрков",
     "Jlufi": "Даниил Маслов",
-    "EuroKaufman": "Даниил Баратов"
+    "EuroKaufman": "Даниил Баратов",
+    "gluteusmx": "Тимофей Курилин"
 };
 
 bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
