@@ -3,9 +3,10 @@ const { Bot, InlineKeyboard } = require('grammy');
 const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
 const { DateTime } = require('luxon'); // Подключаем Luxon для работы с временем
-
 const bot = new Bot(process.env.BOT_API_KEY);
 const db = new sqlite3.Database('tasks.db');
+const cron = require('node-cron');
+
 
 function getMoscowTimestamp() {
     // Получаем текущее время и дату
@@ -41,6 +42,11 @@ function getPriorityEmoji(priority) {
     };
     return emojis[priority] || '';
 }
+
+function sendNightShiftMessage(ctx) {
+    ctx.reply('Ночной дозор! Начни смену в боте в 21:00 https://t.me/NightShiftBot_bot');
+}
+
 
 async function fetchAndStoreJiraTasks() {
     try {
@@ -285,21 +291,37 @@ async function updateJiraTaskStatus(taskId) {
 }
 
 let interval;
+let nightShiftCron;
 
 bot.command('start', async (ctx) => {
     await ctx.reply('Привет! Каждую минуту я буду проверять новые задачи...');
 
+    // Настройка интервала для регулярной отправки задач
     if (!interval) {
         interval = setInterval(async () => {
             console.log('Interval triggered. Sending Jira tasks...');
-            await fetchAndStoreJiraTasks(); // Обновление задач
-            await sendJiraTasks(ctx); // Отправка задач текущему пользователю
+            await fetchAndStoreJiraTasks(); // Ваша функция для обновления задач
+            await sendJiraTasks(ctx); // Ваша функция для отправки задач
             console.log('Jira tasks sent.');
         }, 60000);  // 60000 миллисекунд = 1 минута
     } else {
         await ctx.reply('Интервал уже запущен.');
     }
+
+    // Настройка крон задачи для отправки уведомления "Ночной дозор" в 21:00
+    if (!nightShiftCron) {
+        nightShiftCron = cron.schedule('0 21 * * *', async () => {
+            await ctx.reply('Ночной дозор! Начни смену в боте в 21:00 https://t.me/NightShiftBot_bot');
+        }, {
+            scheduled: false,
+            timezone: "Europe/Moscow"
+        });
+
+        nightShiftCron.start();
+    }
 });
+
+bot.start();
 
 bot.command('stop', async (ctx) => {
     if (interval) {
