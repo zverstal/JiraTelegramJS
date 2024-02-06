@@ -161,7 +161,7 @@ async function sendJiraTasks(ctx) {
 const usernameMappings = {
     "lipchinski": "Дмитрий Селиванов",
     "YurkovOfficial": "Пётр Юрков",
-    "Jlufi": "Даниил Маслов",
+    "fdhsudgjdgkdfg": "Даниил Маслов",
     "EuroKaufman": "Даниил Баратов",
     "gluteusmx": "Тимофей Курилин"
 };
