@@ -163,7 +163,8 @@ const usernameMappings = {
     "YurkovOfficial": "Пётр Юрков",
     "fdhsudgjdgkdfg": "Даниил Маслов",
     "EuroKaufman": "Даниил Баратов",
-    "gluteusmx": "Тимофей Курилин"
+    "gluteusmx": "Тимофей Курилин",
+    "KIRILlKxX": "Кирилл Атанизяов"
 };
 
 bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
