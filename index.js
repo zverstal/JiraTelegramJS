@@ -309,27 +309,27 @@ bot.command('start', async (ctx) => {
         await ctx.reply('Интервал уже запущен.');
     }
 
-    // Настройка крон задачи для отправки уведомления "Ночной дозор" в 21:00
-    if (!nightShiftCron) {
-        nightShiftCron = cron.schedule('0 23 * * *', async () => {
-            await ctx.reply('Доброй ночи! Внеси дела для утренней смены сюда: https://plan-kaban.ru/boards/1207384783689090054');
-            
-            // Настройка крон задачи для отправки уведомления "Утренний дозор" в 10:00 следующего дня
-            let morningShiftCron = cron.schedule('0 10 * * *', async () => {
-                await ctx.reply('Доброе утро! Не забудь проверить задачи на сегодня: https://plan-kaban.ru/boards/1207384783689090054');
-            }, {
-                scheduled: false,
-                timezone: "Europe/Moscow"
-            });
-            
-            morningShiftCron.start();
+// Настройка крон задачи для отправки уведомления "Ночной дозор" в 21:00
+if (!nightShiftCron) {
+    nightShiftCron = cron.schedule('0 21 * * *', async () => {
+        await ctx.reply('Доброй ночи! Внеси дела для утренней смены сюда: https://plan-kaban.ru/boards/1207384783689090054');
+        
+        // Настройка крон задачи для отправки уведомления "Утренний дозор" в 10:00 следующего дня
+        let morningShiftCron = cron.schedule('0 10 * * *', async () => {
+            await ctx.reply('Доброе утро! Не забудь проверить задачи на сегодня: https://plan-kaban.ru/boards/1207384783689090054');
         }, {
             scheduled: false,
             timezone: "Europe/Moscow"
         });
-    
-        nightShiftCron.start();
-    }
+        
+        morningShiftCron.start();
+    }, {
+        scheduled: false,
+        timezone: "Europe/Moscow"
+    });
+
+    nightShiftCron.start();
+}
 
 bot.start();
 
