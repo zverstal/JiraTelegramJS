@@ -2,17 +2,13 @@ require('dotenv').config();
 const { Bot, InlineKeyboard } = require('grammy');
 const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
-const { DateTime } = require('luxon'); // Подключаем Luxon для работы с временем
+const { DateTime } = require('luxon');
 const bot = new Bot(process.env.BOT_API_KEY);
 const db = new sqlite3.Database('tasks.db');
 const cron = require('node-cron');
 
-
 function getMoscowTimestamp() {
-    // Получаем текущее время и дату
     const moscowTime = DateTime.now().setZone('Europe/Moscow');
-
-    // Форматируем время в строку
     return moscowTime.toFormat('yyyy-MM-dd HH:mm:ss');
 }
 
@@ -21,15 +17,16 @@ db.run(`CREATE TABLE IF NOT EXISTS tasks (
     title TEXT,
     priority TEXT,
     department TEXT,
-    dateAdded DATETIME,     -- Дата добавления задачи
-    lastSent DATETIME       -- Дата отправки задачи
+    dateAdded DATETIME,
+    lastSent DATETIME,
+    source TEXT -- Источник задачи
 )`);
 
 db.run(`CREATE TABLE IF NOT EXISTS user_actions (
     username TEXT,
     taskId TEXT,
     action TEXT,
-    timestamp DATETIME,  -- Просто DATETIME
+    timestamp DATETIME,
     FOREIGN KEY(taskId) REFERENCES tasks(id)
 )`);
 
@@ -47,44 +44,47 @@ function sendNightShiftMessage(ctx) {
     ctx.reply('Ночной дозор! Начни смену в боте в 21:00 https://t.me/NightShiftBot_bot');
 }
 
-
 async function fetchAndStoreJiraTasks() {
+    await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL);
+    await fetchAndStoreTasksFromJira('betone', 'https://jira.betone.team/rest/api/2/search', process.env.JIRA_PAT_BETONE);
+}
+
+async function fetchAndStoreTasksFromJira(source, url, pat) {
     try {
-        console.log('Fetching tasks from Jira...');
-        const response = await axios.get('https://jira.sxl.team/rest/api/2/search', {
+        console.log(`Fetching tasks from ${source} Jira...`);
+        const response = await axios.get(url, {
             headers: {
-                'Authorization': `Bearer ${process.env.JIRA_PAT}`,
+                'Authorization': `Bearer ${pat}`,
                 'Accept': 'application/json'
             },
             params: {
                 jql: 'project = SUPPORT AND (Отдел = "Техническая поддержка" or Отдел = "QA" or Отдел = "Sportsbook") and status = "Open"'
             }
         });
-        console.log('Jira API response:', response.data);
+        console.log(`${source} Jira API response:`, response.data);
 
         const fetchedTaskIds = response.data.issues.map(issue => issue.key);
 
-        // Удаление задач из базы данных, которые больше не "Open" в Jira
         await new Promise((resolve, reject) => {
             const placeholders = fetchedTaskIds.map(() => '?').join(',');
-            db.run(`DELETE FROM tasks WHERE id NOT IN (${placeholders})`, fetchedTaskIds, function(err) {
+            db.run(`DELETE FROM tasks WHERE id NOT IN (${placeholders}) AND source = ?`, [...fetchedTaskIds, source], function(err) {
                 if (err) {
                     reject(err);
-                    console.error('Error deleting tasks:', err);
+                    console.error(`Error deleting tasks from ${source} Jira:`, err);
                 } else {
                     resolve();
                 }
             });
         });
 
-        // Добавление или обновление задач в базе данных
         for (const issue of response.data.issues) {
             const task = {
                 id: issue.key,
                 title: issue.fields.summary,
                 priority: issue.fields.priority.name,
                 department: issue.fields.customfield_10500 ? issue.fields.customfield_10500.value : 'Не указан',
-                dateAdded: getMoscowTimestamp()
+                dateAdded: getMoscowTimestamp(),
+                source: source
             };
 
             const existingTask = await new Promise((resolve, reject) => {
@@ -98,23 +98,18 @@ async function fetchAndStoreJiraTasks() {
             });
 
             if (existingTask) {
-                db.run('UPDATE tasks SET title = ?, priority = ?, department = ? WHERE id = ?', [task.title, task.priority, task.department, task.id]);
+                db.run('UPDATE tasks SET title = ?, priority = ?, department = ?, source = ? WHERE id = ?', [task.title, task.priority, task.department, task.source, task.id]);
             } else {
-                db.run('INSERT INTO tasks (id, title, priority, department, dateAdded, lastSent) VALUES (?, ?, ?, ?, ?, NULL)', [task.id, task.title, task.priority, task.department, task.dateAdded]);
+                db.run('INSERT INTO tasks (id, title, priority, department, dateAdded, lastSent, source) VALUES (?, ?, ?, ?, ?, NULL, ?)', [task.id, task.title, task.priority, task.department, task.dateAdded, task.source]);
             }
         }
     } catch (error) {
-        console.error('Error fetching and storing Jira tasks:', error);
+        console.error(`Error fetching and storing tasks from ${source} Jira:`, error);
     }
 }
 
-
-
 async function sendJiraTasks(ctx) {
-    // Получаем текущую дату в формате ГГГГ-ММ-ДД
     const today = getMoscowTimestamp().split(' ')[0];
-
-    // Формируем SQL-запрос с учетом условий отправки и сортировкой по отделу
     const query = `
         SELECT * FROM tasks WHERE 
         (department IN ("QA", "Sportsbook") AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days')))
@@ -137,19 +132,17 @@ async function sendJiraTasks(ctx) {
             const department = task.department;
             const keyboard = new InlineKeyboard();
 
-            // Собираем клавиатуру в зависимости от отдела
             if (department === "Техническая поддержка") {
                 keyboard.text('Взять в работу', `take_task:${task.id}`);
             } else if (department === "QA" || department === "Sportsbook") {
                 keyboard.text('В курсе', `aware_task:${task.id}`);
             }
 
-            const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${department}`;
+            const messageText = `Задача: ${task.id}\nИсточник: ${task.source}\nСсылка: https://jira.${task.source === 'sxl' ? 'sxl' : 'betone'}.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${department}`;
             console.log('Sending message to Telegram:', messageText);
 
             await ctx.reply(messageText, { reply_markup: keyboard });
 
-            // Обновляем lastSent в базе данных для задачи
             const moscowTimestamp = getMoscowTimestamp();
             console.log(`Updating lastSent for task ${task.id} to: ${moscowTimestamp}`);
             db.run('UPDATE tasks SET lastSent = ? WHERE id = ?', [moscowTimestamp, task.id]);
@@ -157,13 +150,12 @@ async function sendJiraTasks(ctx) {
     });
 }
 
-
 const usernameMappings = {
     "lipchinski": "Дмитрий Селиванов",
     "YurkovOfficial": "Пётр Юрков",
     "fdhsudgjdgkdfg": "Даниил Маслов",
     "EuroKaufman": "Даниил Баратов",
-    "gluteusmx": "Тимофей Курилин",
+    "Nikolay_Gonchar": "Николай Гончар",
     "KIRILlKxX": "Кирилл Атанизяов"
 };
 
@@ -185,12 +177,10 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
             }
 
             if (task.department === "Техническая поддержка") {
-                const success = await updateJiraTaskStatus(taskId);
+                const success = await updateJiraTaskStatus(task.source, taskId);
                 if (success) {
                     const displayName = usernameMappings[ctx.from.username] || ctx.from.username;
-
-                    // Формируем текст сообщения с полными деталями задачи
-                    const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nВзял в работу: ${displayName}`;
+                    const messageText = `Задача: ${task.id}\nИсточник: ${task.source}\nСсылка: https://jira.${task.source === 'sxl' ? 'sxl' : 'betone'}.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nВзял в работу: ${displayName}`;
 
                     await ctx.editMessageText(messageText, { reply_markup: { inline_keyboard: [] } });
 
@@ -209,13 +199,11 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     }
 });
 
-
 bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
     try {
         const taskId = ctx.match[1];
         const username = ctx.from.username;
 
-        // Получаем информацию о задаче из базы данных
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (taskErr, task) => {
             if (taskErr) {
                 console.error('Ошибка при получении информации о задаче:', taskErr);
@@ -224,13 +212,11 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
             }
 
             if (!task) {
-                // Задача не найдена, удаляем кнопку
                 await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
                 await ctx.reply('Задача не найдена.');
                 return;
             }
 
-            // Проверяем, отмечал ли этот пользователь задачу как 'в курсе' ранее
             db.get('SELECT * FROM user_actions WHERE username = ? AND taskId = ? AND action = "aware_task"', [username, taskId], async (err, row) => {
                 if (err) {
                     console.error('Ошибка при запросе к базе данных:', err);
@@ -238,14 +224,11 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
                 }
 
                 if (!row) {
-                    // Добавляем запись в базу данных
                     await db.run('INSERT OR IGNORE INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)', [username, taskId, 'aware_task', getMoscowTimestamp()]);
                 } else {
-                    // Если пользователь уже отмечал задачу, сообщаем об этом
                     ctx.answerCallbackQuery('Вы уже отметили эту задачу как просмотренную.');
                 }
 
-                // Получаем обновленный список пользователей, осведомленных о задаче
                 db.all('SELECT DISTINCT username FROM user_actions WHERE taskId = ? AND action = "aware_task"', [taskId], async (selectErr, users) => {
                     if (selectErr) {
                         console.error('Ошибка при получении списка пользователей:', selectErr);
@@ -253,11 +236,10 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
                     }
 
                     const awareUsersList = users.map(u => usernameMappings[u.username] || u.username).join(', ');
-                    const lastUpdated = new Date().toLocaleTimeString(); // Временная метка последнего обновления
-                    const messageText = `Задача: ${task.id}\nСсылка: https://jira.sxl.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи: ${awareUsersList}\n\nПоследнее обновление: ${lastUpdated}`;
+                    const lastUpdated = new Date().toLocaleTimeString();
+                    const messageText = `Задача: ${task.id}\nИсточник: ${task.source}\nСсылка: https://jira.${task.source === 'sxl' ? 'sxl' : 'betone'}.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи: ${awareUsersList}\n\nПоследнее обновление: ${lastUpdated}`;
                     const replyMarkup = users.length >= 3 ? undefined : ctx.callbackQuery.message.reply_markup;
 
-                    // Обновляем текст сообщения с добавлением временной метки
                     await ctx.editMessageText(messageText, { reply_markup: replyMarkup });
                 });
             });
@@ -268,25 +250,25 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
     }
 });
 
-
-
-
-async function updateJiraTaskStatus(taskId) {
+async function updateJiraTaskStatus(source, taskId) {
     try {
         const transitionId = '221'; // Замените на актуальный ID
-        const transitionResponse = await axios.post(`https://jira.sxl.team/rest/api/2/issue/${taskId}/transitions`, {
+        const url = source === 'sxl' ? `https://jira.sxl.team/rest/api/2/issue/${taskId}/transitions` : `https://jira.betone.team/rest/api/2/issue/${taskId}/transitions`;
+        const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
+        
+        const transitionResponse = await axios.post(url, {
             transition: {
                 id: transitionId
             }
         }, {
             headers: {
-                'Authorization': `Bearer ${process.env.JIRA_PAT}`,
+                'Authorization': `Bearer ${pat}`,
                 'Content-Type': 'application/json'
             }
         });
         return transitionResponse.status === 204;
     } catch (error) {
-        console.error('Error updating Jira task:', error);
+        console.error(`Error updating ${source} Jira task:`, error);
         return false;
     }
 }
@@ -295,30 +277,25 @@ let interval;
 let nightShiftCron;
 let morningShiftCron;
 
-// Обработчик команды "start"
 bot.command('start', async (ctx) => {
     await ctx.reply('Привет! Каждую минуту я буду проверять новые задачи...');
 
-    // Настройка интервала для регулярной отправки задач
     if (!interval) {
         interval = setInterval(async () => {
             console.log('Interval triggered. Sending Jira tasks...');
-            await fetchAndStoreJiraTasks(); // Ваша функция для обновления задач
-            await sendJiraTasks(ctx); // Ваша функция для отправки задач
+            await fetchAndStoreJiraTasks();
+            await sendJiraTasks(ctx);
             console.log('Jira tasks sent.');
-        }, 60000);  // 60000 миллисекунд = 1 минута
+        }, 60000);
     } else {
         await ctx.reply('Интервал уже запущен.');
     }
 
-    // Настройка крон задачи для отправки уведомления "Ночной дозор" в 21:00
     if (!nightShiftCron) {
         nightShiftCron = cron.schedule('0 21 * * *', async () => {
             await ctx.reply('Доброй ночи! Внеси дела для утренней смены сюда: https://plan-kaban.ru/boards/1207384783689090054');
 
-            // Проверка, существует ли уже крон-задача для утреннего сообщения
             if (!morningShiftCron) {
-                // Настройка крон задачи для отправки уведомления "Утренний дозор" в 10:00 следующего дня
                 morningShiftCron = cron.schedule('0 10 * * *', async () => {
                     await ctx.reply('Доброе утро! Не забудь проверить задачи на сегодня: https://plan-kaban.ru/boards/1207384783689090054');
                 }, {
@@ -337,8 +314,6 @@ bot.command('start', async (ctx) => {
     }
 });
 
-
-// Обработчик команды "stop"
 bot.command('stop', async (ctx) => {
     if (interval) {
         clearInterval(interval);
@@ -349,5 +324,4 @@ bot.command('stop', async (ctx) => {
     }
 });
 
-// Запуск бота
 bot.start();
