@@ -45,7 +45,7 @@ function sendNightShiftMessage(ctx) {
 }
 
 async function fetchAndStoreJiraTasks() {
-    await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL, 'QA', 'Sportsbook');
+    await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL, 'QA', 'Sportsbook','Техническая поддержка');
     await fetchAndStoreTasksFromJira('betone', 'https://jira.betone.team/rest/api/2/search', process.env.JIRA_PAT_BETONE, 'QA', 'Техническая поддержка');
 }
 
