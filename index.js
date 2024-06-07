@@ -83,7 +83,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
                 id: issue.key,
                 title: issue.fields.summary,
                 priority: issue.fields.priority.name,
-                department: source === 'betone' ? (issue.fields.customfield_10504 ? issue.fields.customfield_10504.value : 'Не указан') : (issue.fields.customfield_10500 ? issue.fields.customfield_10500.value : 'Не указан'),
+                department: (source === 'betone' && issue.fields.customfield_10504) ? issue.fields.customfield_10504.value : ((source === 'sxl' && issue.fields.customfield_10500) ? issue.fields.customfield_10500.value : 'Не указан'),
                 dateAdded: getMoscowTimestamp(),
                 source: source
             };
@@ -108,6 +108,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
         console.error(`Error fetching and storing tasks from ${source} Jira:`, error);
     }
 }
+
 
 
 async function sendJiraTasks(ctx) {
