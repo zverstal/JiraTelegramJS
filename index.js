@@ -45,20 +45,21 @@ function sendNightShiftMessage(ctx) {
 }
 
 async function fetchAndStoreJiraTasks() {
-    await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL);
-    await fetchAndStoreTasksFromJira('betone', 'https://jira.betone.team/rest/api/2/search', process.env.JIRA_PAT_BETONE);
+    await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL, 'QA', 'Sportsbook');
+    await fetchAndStoreTasksFromJira('betone', 'https://jira.betone.team/rest/api/2/search', process.env.JIRA_PAT_BETONE, 'QA', 'Техническая поддержка');
 }
 
-async function fetchAndStoreTasksFromJira(source, url, pat) {
+async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
     try {
         console.log(`Fetching tasks from ${source} Jira...`);
+        const departmentQuery = departments.map(dep => `"${dep}"`).join(" or Отдел = ");
         const response = await axios.get(url, {
             headers: {
                 'Authorization': `Bearer ${pat}`,
                 'Accept': 'application/json'
             },
             params: {
-                jql: 'project = SUPPORT AND (Отдел = "Техническая поддержка" or Отдел = "QA" or Отдел = "Sportsbook") and status = "Open"'
+                jql: `project = SUPPORT AND (Отдел = ${departmentQuery}) and status = "Open"`
             }
         });
         console.log(`${source} Jira API response:`, response.data);
