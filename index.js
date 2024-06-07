@@ -254,8 +254,17 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
 
 async function updateJiraTaskStatus(source, taskId) {
     try {
-        const transitionId = '221'; // Замените на актуальный ID
-        const url = source === 'sxl' ? `https://jira.sxl.team/rest/api/2/issue/${taskId}/transitions` : `https://jira.betone.team/rest/api/2/issue/${taskId}/transitions`;
+        let transitionId;
+        if (source === 'sxl') {
+            transitionId = '221'; // Ваш transitionId для sxl
+        } else if (source === 'betone') {
+            transitionId = '201'; // Ваш transitionId для betone
+        } else {
+            console.error('Invalid source specified');
+            return false;
+        }
+
+        const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}/transitions`;
         const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
         
         const transitionResponse = await axios.post(url, {
@@ -268,12 +277,14 @@ async function updateJiraTaskStatus(source, taskId) {
                 'Content-Type': 'application/json'
             }
         });
+
         return transitionResponse.status === 204;
     } catch (error) {
         console.error(`Error updating ${source} Jira task:`, error);
         return false;
     }
 }
+
 
 let interval;
 let nightShiftCron;
