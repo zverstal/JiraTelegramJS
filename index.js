@@ -109,8 +109,6 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
     }
 }
 
-
-
 async function sendJiraTasks(ctx) {
     const today = getMoscowTimestamp().split(' ')[0];
     const query = `
@@ -155,16 +153,26 @@ async function sendJiraTasks(ctx) {
 
 const usernameMappings = {
     "lipchinski": "Дмитрий Селиванов",
-    "YurkovOfficial": "Пётр Юрков",
+    "ayugoncharov": "Александр Гончаров",
     "fdhsudgjdgkdfg": "Даниил Маслов",
-    "EuroKaufman": "Даниил Баратов",
+    "eurokaufman": "Даниил Баратов",
     "Nikolay_Gonchar": "Николай Гончар",
     "KIRILlKxX": "Кирилл Атанизяов"
+};
+
+const jiraUserMappings = {
+    "lipchinski": { "sxl": "d.selivanov", "betone": "dms" },
+    "ayugoncharov": { "sxl": "a.goncharov", "betone": "ag" },
+    "fdhsudgjdgkdfg": { "sxl": "d.maslov", "betone": "dam" },
+    "eurokaufman": { "sxl": "d.baratov", "betone": "db" },
+    "Nikolay_Gonchar": { "sxl": "n.gonchar", "betone": "ng" },
+    "KIRILlKxX": { "sxl": "k.ataniyazov", "betone": "ka" }
 };
 
 bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     try {
         const taskId = ctx.match[1];
+        const username = ctx.from.username;
 
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err) {
@@ -180,7 +188,7 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
             }
 
             if (task.department === "Техническая поддержка") {
-                const success = await updateJiraTaskStatus(task.source, taskId);
+                const success = await updateJiraTaskStatus(task.source, taskId, username);
                 if (success) {
                     const displayName = usernameMappings[ctx.from.username] || ctx.from.username;
                     const messageText = `Задача: ${task.id}\nИсточник: ${task.source}\nСсылка: https://jira.${task.source === 'sxl' ? 'sxl' : 'betone'}.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nВзял в работу: ${displayName}`;
@@ -253,7 +261,7 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
     }
 });
 
-async function updateJiraTaskStatus(source, taskId) {
+async function updateJiraTaskStatus(source, taskId, telegramUsername) {
     try {
         let transitionId;
         if (source === 'sxl') {
@@ -265,10 +273,31 @@ async function updateJiraTaskStatus(source, taskId) {
             return false;
         }
 
-        const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}/transitions`;
+        const jiraUsername = jiraUserMappings[telegramUsername][source];
+        if (!jiraUsername) {
+            console.error(`No Jira username mapping found for Telegram username: ${telegramUsername}`);
+            return false;
+        }
+
+        const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}/assignee`;
         const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
         
-        const transitionResponse = await axios.post(url, {
+        const assigneeResponse = await axios.put(url, {
+            name: jiraUsername
+        }, {
+            headers: {
+                'Authorization': `Bearer ${pat}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (assigneeResponse.status !== 204) {
+            console.error(`Error assigning Jira task: ${assigneeResponse.status}`);
+            return false;
+        }
+
+        const transitionUrl = `https://jira.${source}.team/rest/api/2/issue/${taskId}/transitions`;
+        const transitionResponse = await axios.post(transitionUrl, {
             transition: {
                 id: transitionId
             }
@@ -285,7 +314,6 @@ async function updateJiraTaskStatus(source, taskId) {
         return false;
     }
 }
-
 
 let interval;
 let nightShiftCron;
@@ -307,7 +335,7 @@ bot.command('start', async (ctx) => {
 
     if (!nightShiftCron) {
         nightShiftCron = cron.schedule('0 21 * * *', async () => {
-            await ctx.reply('Доброй ночи! Внеси дела для утренней смены сюда: https://plan-kaban.ru/boards/1207384783689090054');
+            await ctx.reply('Доброй ночи! Заполни тикет передачи смены и внеси дела для утренней смены сюда: https://plan-kaban.ru/boards/1207384783689090054');
 
             if (!morningShiftCron) {
                 morningShiftCron = cron.schedule('0 10 * * *', async () => {
