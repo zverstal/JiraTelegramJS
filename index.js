@@ -155,7 +155,7 @@ const usernameMappings = {
     "lipchinski": "Дмитрий Селиванов",
     "ayugoncharov": "Александр Гончаров",
     "fdhsudgjdgkdfg": "Даниил Маслов",
-    "eurokaufman": "Даниил Баратов",
+    "EuroKaufman": "Даниил Баратов",
     "Nikolay_Gonchar": "Николай Гончар",
     "KIRILlKxX": "Кирилл Атанизяов"
 };
@@ -164,7 +164,7 @@ const jiraUserMappings = {
     "lipchinski": { "sxl": "d.selivanov", "betone": "dms" },
     "ayugoncharov": { "sxl": "a.goncharov", "betone": "ag" },
     "fdhsudgjdgkdfg": { "sxl": "d.maslov", "betone": "dam" },
-    "eurokaufman": { "sxl": "d.baratov", "betone": "db" },
+    "EuroKaufman": { "sxl": "d.baratov", "betone": "db" },
     "Nikolay_Gonchar": { "sxl": "n.gonchar", "betone": "ng" },
     "KIRILlKxX": { "sxl": "k.ataniyazov", "betone": "ka" }
 };
