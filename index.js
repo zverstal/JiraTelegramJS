@@ -168,7 +168,7 @@ async function sendJiraTasks(ctx) {
 
 const usernameMappings = {
     "lipchinski": "Дмитрий Селиванов",
-    "ayugoncharov": "Александр Гончаров",
+    "pr0spal": "Евгений Шушков",
     "fdhsudgjdgkdfg": "Даниил Маслов",
     "EuroKaufman": "Даниил Баратов",
     "Nikolay_Gonchar": "Николай Гончар",
@@ -177,7 +177,7 @@ const usernameMappings = {
 
 const jiraUserMappings = {
     "lipchinski": { "sxl": "d.selivanov", "betone": "dms" },
-    "ayugoncharov": { "sxl": "a.goncharov", "betone": "ag" },
+    "pr0spal": { "sxl": "e.shushkov", "betone": "es" },
     "fdhsudgjdgkdfg": { "sxl": "d.maslov", "betone": "dam" },
     "EuroKaufman": { "sxl": "d.baratov", "betone": "db" },
     "Nikolay_Gonchar": { "sxl": "n.gonchar", "betone": "ng" },
