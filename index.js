@@ -12,11 +12,13 @@ function getMoscowTimestamp() {
     return moscowTime.toFormat('yyyy-MM-dd HH:mm:ss');
 }
 
+// Обновляем структуру базы данных, добавляем поле issueType
 db.run(`CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     title TEXT,
     priority TEXT,
     department TEXT,
+    issueType TEXT,  -- Добавляем тип задачи
     dateAdded DATETIME,
     lastSent DATETIME,
     source TEXT -- Источник задачи
@@ -40,27 +42,38 @@ function getPriorityEmoji(priority) {
     return emojis[priority] || '';
 }
 
-function sendNightShiftMessage(ctx) {
-    ctx.reply('Ночной дозор! Начни смену в боте в 21:00 https://t.me/NightShiftBot_bot');
-}
-
 async function fetchAndStoreJiraTasks() {
-    await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL, 'QA', 'Sportsbook','Техническая поддержка');
-    await fetchAndStoreTasksFromJira('betone', 'https://jira.betone.team/rest/api/2/search', process.env.JIRA_PAT_BETONE, 'QA', 'Техническая поддержка');
+    // Запрашиваем задачи DevOps для SXL и техническую поддержку для BetOne
+    await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL, 'Техническая поддержка');
+    await fetchAndStoreTasksFromJira('betone', 'https://jira.betone.team/rest/api/2/search', process.env.JIRA_PAT_BETONE, 'Техническая поддержка');
 }
 
 async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
     try {
         console.log(`Fetching tasks from ${source} Jira...`);
-        const departmentQuery = departments.map(dep => `"${dep}"`).join(" or Отдел = ");
+
+        let jql;
+        if (source === 'sxl') {
+            // JQL запрос для задач DevOps
+            jql = `
+                project = SUPPORT AND (
+                    (issuetype = Infra AND status = "Open") OR
+                    (issuetype = Office AND status = "Under review") OR
+                    (issuetype = Prod AND status = "Open")
+                )
+            `;
+        } else {
+            // Запрос для Технической поддержки (betone)
+            const departmentQuery = departments.map(dep => `"${dep}"`).join(" or Отдел = ");
+            jql = `project = SUPPORT AND (Отдел = ${departmentQuery}) and status = "Open"`;
+        }
+
         const response = await axios.get(url, {
             headers: {
                 'Authorization': `Bearer ${pat}`,
                 'Accept': 'application/json'
             },
-            params: {
-                jql: `project = SUPPORT AND (Отдел = ${departmentQuery}) and status = "Open"`
-            }
+            params: { jql }
         });
         console.log(`${source} Jira API response:`, response.data);
 
@@ -82,7 +95,8 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
             const task = {
                 id: issue.key,
                 title: issue.fields.summary,
-                priority: issue.fields.priority.name,
+                priority: issue.fields.priority?.name || 'Не указан', // Приоритет может отсутствовать
+                issueType: issue.fields.issuetype?.name || 'Не указан', // Добавляем тип задачи
                 department: (source === 'betone' && issue.fields.customfield_10504) ? issue.fields.customfield_10504.value : ((source === 'sxl' && issue.fields.customfield_10500) ? issue.fields.customfield_10500.value : 'Не указан'),
                 dateAdded: getMoscowTimestamp(),
                 source: source
@@ -99,9 +113,9 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
             });
 
             if (existingTask) {
-                db.run('UPDATE tasks SET title = ?, priority = ?, department = ?, source = ? WHERE id = ?', [task.title, task.priority, task.department, task.source, task.id]);
+                db.run('UPDATE tasks SET title = ?, priority = ?, issueType = ?, department = ?, source = ? WHERE id = ?', [task.title, task.priority, task.issueType, task.department, task.source, task.id]);
             } else {
-                db.run('INSERT INTO tasks (id, title, priority, department, dateAdded, lastSent, source) VALUES (?, ?, ?, ?, ?, NULL, ?)', [task.id, task.title, task.priority, task.department, task.dateAdded, task.source]);
+                db.run('INSERT INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)', [task.id, task.title, task.priority, task.issueType, task.department, task.dateAdded, task.source]);
             }
         }
     } catch (error) {
@@ -113,13 +127,12 @@ async function sendJiraTasks(ctx) {
     const today = getMoscowTimestamp().split(' ')[0];
     const query = `
         SELECT * FROM tasks WHERE 
-        (department IN ("QA", "Sportsbook") AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days')))
-        OR
         (department = "Техническая поддержка" AND (lastSent IS NULL OR lastSent < date('${today}')))
+        OR
+        (issueType IN ('Infra', 'Office', 'Prod') AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days')))
         ORDER BY CASE 
-            WHEN department = 'QA' THEN 1 
-            WHEN department = 'Sportsbook' THEN 2 
-            ELSE 3 
+            WHEN department = 'Техническая поддержка' THEN 1 
+            ELSE 2 
         END
     `;
 
@@ -130,16 +143,18 @@ async function sendJiraTasks(ctx) {
         }
 
         for (const task of rows) {
-            const department = task.department;
             const keyboard = new InlineKeyboard();
 
-            if (department === "Техническая поддержка") {
+            // Если это техническая поддержка, можно брать задачу в работу
+            if (task.department === "Техническая поддержка") {
                 keyboard.text('Взять в работу', `take_task:${task.id}`);
-            } else if (department === "QA" || department === "Sportsbook") {
+            } 
+            // Если это DevOps задача (Office, Infra, Prod), доступна только кнопка "В курсе"
+            else if (task.issueType === "Infra" || task.issueType === "Office" || task.issueType === "Prod") {
                 keyboard.text('В курсе', `aware_task:${task.id}`);
             }
 
-            const messageText = `Задача: ${task.id}\nИсточник: ${task.source}\nСсылка: https://jira.${task.source === 'sxl' ? 'sxl' : 'betone'}.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${department}`;
+            const messageText = `Задача: ${task.id}\nИсточник: ${task.source}\nСсылка: https://jira.${task.source === 'sxl' ? 'sxl' : 'betone'}.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nТип задачи: ${task.issueType}`;
             console.log('Sending message to Telegram:', messageText);
 
             await ctx.reply(messageText, { reply_markup: keyboard });
@@ -248,7 +263,7 @@ bot.callbackQuery(/^aware_task:(.+)$/, async (ctx) => {
 
                     const awareUsersList = users.map(u => usernameMappings[u.username] || u.username).join(', ');
                     const lastUpdated = new Date().toLocaleTimeString();
-                    const messageText = `Задача: ${task.id}\nИсточник: ${task.source}\nСсылка: https://jira.${task.source === 'sxl' ? 'sxl' : 'betone'}.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nОтдел: ${task.department}\n\nПользователи в курсе задачи: ${awareUsersList}\n\nПоследнее обновление: ${lastUpdated}`;
+                    const messageText = `Задача: ${task.id}\nИсточник: ${task.source}\nСсылка: https://jira.${task.source === 'sxl' ? 'sxl' : 'betone'}.team/browse/${task.id}\nОписание: ${task.title}\nПриоритет: ${getPriorityEmoji(task.priority)}\nТип задачи: ${task.issueType}\n\nПользователи в курсе задачи: ${awareUsersList}\n\nПоследнее обновление: ${lastUpdated}`;
                     const replyMarkup = users.length >= 3 ? undefined : ctx.callbackQuery.message.reply_markup;
 
                     await ctx.editMessageText(messageText, { reply_markup: replyMarkup });
