@@ -59,7 +59,8 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
             jql = `
                 project = SUPPORT AND (
                     (issuetype = Infra AND status = "Open") OR
-                    (issuetype = Office AND status in ("Under review", "Waiting for support") OR
+                    (issuetype = Office AND status = "Under review") OR
+                    (issuetype = Office AND status = "Waiting for support") OR
                     (issuetype = Prod AND status = "Waiting for Developers approval")
                 )
             `;
