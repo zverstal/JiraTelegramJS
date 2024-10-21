@@ -55,7 +55,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
         const departmentQuery = departments.map(dep => `"${dep}"`).join(" or Отдел = ");
         let jql;
         if (source === 'sxl') {
-            // JQL запрос для задач DevOps
+            // JQL запрос для задач DevOps и Support
             jql = `
                 project = SUPPORT AND (
                     (issuetype = Infra AND status = "Open") OR
