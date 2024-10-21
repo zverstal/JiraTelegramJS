@@ -52,7 +52,7 @@ async function fetchAndStoreJiraTasks() {
 async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
     try {
         console.log(`Fetching tasks from ${source} Jira...`);
-
+        const departmentQuery = departments.map(dep => `"${dep}"`).join(" or Отдел = ");
         let jql;
         if (source === 'sxl') {
             // JQL запрос для задач DevOps
@@ -67,7 +67,6 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
             `;
         } else {
             // Запрос для Технической поддержки (betone)
-            const departmentQuery = departments.map(dep => `"${dep}"`).join(" or Отдел = ");
             jql = `project = SUPPORT AND (Отдел = ${departmentQuery}) and status = "Open"`;
         }
 
