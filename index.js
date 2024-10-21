@@ -61,7 +61,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
                     (issuetype = Infra AND status = "Open") OR
                     (issuetype = Office AND status = "Under review") OR
                     (issuetype = Office AND status = "Waiting for support") OR
-                    (issuetype = Prod AND status = "Waiting for Developers approval")
+                    (issuetype = Prod AND status = "Waiting for Developers approval") OR
                     (Отдел = ${departmentQuery} AND status = "Open")
                 )
             `;
