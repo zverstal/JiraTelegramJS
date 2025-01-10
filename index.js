@@ -225,7 +225,7 @@ async function checkForNewComments() {
                     'Authorization': `Bearer ${pat}`,
                     'Accept': 'application/json'
                 },
-                params: { jql, fields: 'comment,assignee,summary,priority,issuetype' }
+                params: { jql, maxResults: 1000, startAt: 0, fields: 'comment,assignee,summary,priority,issuetype' }
             });
 
             const issues = response.data.issues;
