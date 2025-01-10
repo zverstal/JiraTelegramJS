@@ -1906,78 +1906,45 @@ async function commentConversation(conversation, ctx) {
  */
 bot.use(createConversation(commentConversation, "commentConversation"));
 
-/**
- * Глобальный обработчик ошибок.
- */
+// Обработчик channel_post для команд, отправленных в канал
+bot.on('channel_post', async (ctx) => {
+    const text = ctx.channelPost.text;
+    const chatId = ctx.channelPost.chat.id;
+    console.log(`Received channel_post from chat ID ${chatId}: ${text}`);
+
+    if (text && text.startsWith('/start')) {
+        console.log('Processing /start command in channel');
+        await ctx.reply(
+            'Привет! Я бот, который будет сообщать о новых задачах.\n' +
+            'Используй /report для отчёта по выполненным задачам.'
+        );
+
+        // Дополнительные действия при необходимости
+        await fetchAndStoreJiraTasks();
+        await sendJiraTasks(ctx);
+
+        // Запускаем периодическую проверку задач каждые 2 минуты
+        cron.schedule('*/2 * * * *', async () => {
+            console.log('Fetching tasks...');
+            await fetchAndStoreJiraTasks();
+            await sendJiraTasks(ctx);
+        });
+    }
+});
+
+// Утренние и ночные уведомления
+cron.schedule('0 21 * * *', async () => {
+    await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, 'Доброй ночи! Заполни тикет передачи смены.');
+});
+cron.schedule('0 9 * * *', async () => {
+    await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, 'Доброе утро! Проверь задачи на сегодня и начни смену.');
+});
+
+// Глобальный обработчик ошибок
 bot.catch(async (err, ctx) => {
     console.error(`Error while handling update ${ctx.update.update_id}:`, err);
     await ctx.reply('Произошла ошибка при обработке вашего запроса.');
 });
 
-/**
- * Обработчик команд /start.
- */
-bot.command('start', async (ctx) => {
-    console.log('Received /start command from:', ctx.from?.username);
-    await ctx.reply(
-        'Привет! Я буду сообщать о новых задачах и уведомлять о комментариях.\n' +
-        'Используйте команды:\n' +
-        '/report - Показать статистику по выполненным задачам за последние 30 дней (Техподдержка).'
-    );
-
-    // Сразу при старте загрузим задачи и отправим их
-    await fetchAndStoreJiraTasks();
-    await sendJiraTasks(ctx);
-
-    // Запускаем периодическую проверку задач каждые 2 минуты
-    cron.schedule('*/2 * * * *', async () => {
-        console.log('Checking for new/updated tasks...');
-        await fetchAndStoreJiraTasks();
-        await sendJiraTasks(ctx);
-    });
-});
-
-/**
- * Утренние и ночные уведомления.
- */
-cron.schedule('0 21 * * *', async () => {
-    console.log('Night shift reminder sent.');
-    if (process.env.ADMIN_CHAT_ID) {
-        await bot.api.sendMessage(
-            process.env.ADMIN_CHAT_ID,
-            'Доброй ночи! Заполни тикет передачи смены.'
-        );
-    } else {
-        console.error('ADMIN_CHAT_ID is not set in .env');
-    }
-});
-cron.schedule('0 9 * * *', async () => {
-    console.log('Morning reminder sent.');
-    if (process.env.ADMIN_CHAT_ID) {
-        await bot.api.sendMessage(
-            process.env.ADMIN_CHAT_ID,
-            'Доброе утро! Проверь задачи на сегодня и начни смену.'
-        );
-    } else {
-        console.error('ADMIN_CHAT_ID is not set in .env');
-    }
-});
-
-/**
- * Обработчик channel_post для команды /start.
- */
-bot.on('channel_post', async (ctx) => {
-    const text = ctx.channelPost.text;
-    console.log('Received channel_post:', text); // Логирование для отладки
-
-    if (text && text.startsWith('/start')) {
-        console.log('Processing /start command in channel');
-        await ctx.reply(
-            'Привет! Я бот, который будет сообщать о новых задачах и уведомлять о комментариях.\n' +
-            'Используйте команды:\n' +
-            '/report - Показать статистику по выполненным задачам за последние 30 дней (Техподдержка).'
-        );
-        
-        // Дополнительные действия при необходимости
-    }
-});
+// Запускаем бота
+bot.start();
