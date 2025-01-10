@@ -325,7 +325,10 @@ async function fetchAndStoreJiraTasksFromSource(source, url, pat, jql) {
                 }
             );
         }
+    } catch (error) {
+        console.error(`Error in fetchAndStoreJiraTasksFromSource for source ${source}:`, error.response?.data || error.message || error);
     }
+}
 
 /**
  * Функция отправки задач в Telegram канал с заданным JQL фильтром.
