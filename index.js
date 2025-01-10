@@ -8,6 +8,7 @@ const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
 const { DateTime } = require('luxon');
 const cron = require('node-cron');
+const Bottleneck = require('bottleneck');
 
 // Инициализация бота
 const bot = new Bot(process.env.BOT_API_KEY);
@@ -16,6 +17,12 @@ console.log('Bot is starting...');
 // Подключаем middleware для сессий и разговоров
 bot.use(session({ initial: () => ({}) }));
 bot.use(conversations());
+
+// Настройка Bottleneck
+const limiter = new Bottleneck({
+    maxConcurrent: 1, // Максимальное количество одновременных задач
+    minTime: 1000 // Минимальное время между задачами в миллисекундах (1 секунда)
+});
 
 // Подключение к базе данных SQLite
 const db = new sqlite3.Database('tasks.db', (err) => {
@@ -321,10 +328,9 @@ async function sendJiraTasksToChat(chatId) {
         SELECT *
         FROM tasks
         WHERE archived = 0
-          AND (
-              (department = 'Техническая поддержка' AND issueType IN ('Infra', 'Office', 'Prod') AND (lastSent IS NULL OR lastSent < date('${today}'))) OR
-              (issueType IN ('Infra', 'Office', 'Prod') AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days')))
-          )
+          AND department = 'Техническая поддержка'
+          AND issueType IN ('Infra', 'Office', 'Prod')
+          AND (lastSent IS NULL OR lastSent < date('${today}'))
           AND dateAdded >= date('now', '-30 days') -- Исключаем задачи старше 30 дней
     `;
 
@@ -356,16 +362,43 @@ async function sendJiraTasksToChat(chatId) {
 Департамент: ${task.department}
             `.trim();
 
-            try {
-                await bot.api.sendMessage(chatId, messageText, { reply_markup: keyboard });
-
-                // Обновляем поле lastSent
-                db.run('UPDATE tasks SET lastSent = ? WHERE id = ?', [getMoscowTimestamp(), task.id]);
-            } catch (e) {
-                console.error('Error sending task message:', e);
-            }
+            // Обернуть отправку сообщения в Bottleneck
+            limiter.schedule(() => sendMessageWithRetry(chatId, messageText, { reply_markup: keyboard }))
+                .then(() => {
+                    // Обновляем поле lastSent после успешной отправки
+                    db.run('UPDATE tasks SET lastSent = ? WHERE id = ?', [getMoscowTimestamp(), task.id]);
+                })
+                .catch((error) => {
+                    console.error('Failed to send message after retries:', error);
+                });
         }
     });
+}
+
+/**
+ * Отправляет сообщение с обработкой ошибок 429 и повторными попытками.
+ * @param {number|string} chatId - ID чата.
+ * @param {string} text - Текст сообщения.
+ * @param {object} options - Дополнительные опции (например, reply_markup).
+ */
+async function sendMessageWithRetry(chatId, text, options = {}) {
+    try {
+        await bot.api.sendMessage(chatId, text, options);
+    } catch (error) {
+        if (error.error_code === 429 && error.parameters && error.parameters.retry_after) {
+            const retryAfter = error.parameters.retry_after * 1000; // Переводим в миллисекунды
+            console.warn(`Rate limit exceeded. Retrying after ${retryAfter / 1000} seconds...`);
+
+            // Ждем указанное время
+            await new Promise(resolve => setTimeout(resolve, retryAfter));
+
+            // Рекурсивно пробуем снова
+            return sendMessageWithRetry(chatId, text, options);
+        } else {
+            // Проброс других ошибок дальше
+            throw error;
+        }
+    }
 }
 
 /**
@@ -770,7 +803,7 @@ async function checkNewCommentsInDoneTasks() {
 
                         // Отправляем в admin чат
                         if (process.env.ADMIN_CHAT_ID) {
-                            await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, messageText);
+                            await limiter.schedule(() => sendMessageWithRetry(process.env.ADMIN_CHAT_ID, messageText));
                         } else {
                             console.error('ADMIN_CHAT_ID is not set in .env');
                         }
@@ -843,79 +876,6 @@ bot.command('start', async (ctx) => {
 });
 
 /**
- * Conversation для добавления комментария.
- */
-async function commentConversation(conversation, ctx) {
-    // Получаем taskId из callbackData
-    const parts = ctx.match.input.split(':'); // "comment_task:ABC-123"
-    const taskId = parts[1];
-
-    // Получаем информацию о задаче из БД
-    const taskRow = await new Promise((resolve, reject) => {
-        db.get('SELECT * FROM tasks WHERE id = ?', [taskId], (err, row) => {
-            if (err) reject(err);
-            else resolve(row);
-        });
-    });
-
-    if (!taskRow) {
-        await ctx.reply('Задача не найдена в базе данных.');
-        return;
-    }
-
-    const source = taskRow.source;
-    const telegramUsername = ctx.from?.username || '';
-    const realName = mapTelegramUserToName(telegramUsername);
-    const jiraUsername = getJiraUsername(telegramUsername, source);
-
-    if (!jiraUsername) {
-        await ctx.reply(`Не найден Jira-логин для пользователя ${telegramUsername}`);
-        return;
-    }
-
-    // Запрашиваем комментарий
-    await ctx.reply('Введите комментарий для задачи:');
-    const { message } = await conversation.wait();
-
-    const userComment = message.text;
-
-    // Отправляем комментарий в Jira
-    const success = await updateJiraIssueComment(source, taskId, jiraUsername, userComment);
-
-    if (!success) {
-        await ctx.reply('Ошибка при добавлении комментария в Jira.');
-        return;
-    }
-
-    // Редактируем исходное сообщение, добавляя название задачи и кнопку перехода
-    const callbackMsg = ctx.callbackQuery?.message;
-    if (callbackMsg) {
-        const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
-        const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
-        try {
-            await bot.api.editMessageText(
-                callbackMsg.chat.id,
-                callbackMsg.message_id,
-                `${taskRow.department}\n\nКомментарий добавлен: ${realName}\n\nНазвание задачи: ${taskRow.title}`,
-                { reply_markup: keyboard }
-            );
-        } catch (e) {
-            console.error('editMessageText (comment) error:', e);
-        }
-    } else {
-        // Если не удалось найти сообщение для редактирования
-        const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
-        const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
-        await ctx.reply(`${taskRow.department}\n\nКомментарий добавлен: ${realName}\n\nНазвание задачи: ${taskRow.title}`, { reply_markup: keyboard });
-    }
-}
-
-/** 
- * Регистрируем conversation "commentConversation"
- */
-bot.use(createConversation(commentConversation, "commentConversation"));
-
-/**
  * Глобальный обработчик ошибок.
  */
 bot.catch(async (err, ctx) => {
@@ -940,14 +900,14 @@ bot.catch(async (err, ctx) => {
  */
 cron.schedule('0 21 * * *', async () => {
     if (process.env.ADMIN_CHAT_ID) {
-        await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, 'Доброй ночи! Заполни тикет передачи смены.');
+        await limiter.schedule(() => sendMessageWithRetry(process.env.ADMIN_CHAT_ID, 'Доброй ночи! Заполни тикет передачи смены.'));
     } else {
         console.error('ADMIN_CHAT_ID is not set in .env');
     }
 });
 cron.schedule('0 9 * * *', async () => {
     if (process.env.ADMIN_CHAT_ID) {
-        await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, 'Доброе утро! Проверь задачи на сегодня и начни смену.');
+        await limiter.schedule(() => sendMessageWithRetry(process.env.ADMIN_CHAT_ID, 'Доброе утро! Проверь задачи на сегодня и начни смену.'));
     } else {
         console.error('ADMIN_CHAT_ID is not set in .env');
     }
