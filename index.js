@@ -213,7 +213,7 @@ async function sendJiraTasks(ctx) {
 
 async function checkForNewComments() {
     try {
-        const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND resolution = Done And status in (Done, Awaiting, "Awaiting implementation") and updated >= -30d`;
+        const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND status in (Done, Awaiting, "Awaiting implementation") and updated >= -30d`;
         const sources = ['sxl', 'betone'];
 
         for (const source of sources) {
