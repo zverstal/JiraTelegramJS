@@ -326,6 +326,60 @@ bot.command('report', async (ctx) => {
     });
 });
 
+// Функция для обновления статуса задачи в Jira
+async function updateJiraTaskStatus(source, taskId, telegramUsername) {
+    try {
+        let transitionId;
+        if (source === 'sxl') {
+            transitionId = '221'; // Ваш transitionId для sxl
+        } else if (source === 'betone') {
+            transitionId = '201'; // Ваш transitionId для betone
+        } else {
+            console.error('Invalid source specified');
+            return false;
+        }
+
+        const jiraUsername = jiraUserMappings[telegramUsername]?.[source];
+        if (!jiraUsername) {
+            console.error(`No Jira username mapping found for Telegram username: ${telegramUsername}`);
+            return false;
+        }
+
+        const assigneeUrl = `https://jira.${source}.team/rest/api/2/issue/${taskId}/assignee`;
+        const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
+        
+        const assigneeResponse = await axios.put(assigneeUrl, {
+            name: jiraUsername
+        }, {
+            headers: {
+                'Authorization': `Bearer ${pat}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (assigneeResponse.status !== 204) {
+            console.error(`Error assigning Jira task: ${assigneeResponse.status}`);
+            return false;
+        }
+
+        const transitionUrl = `https://jira.${source}.team/rest/api/2/issue/${taskId}/transitions`;
+        const transitionResponse = await axios.post(transitionUrl, {
+            transition: {
+                id: transitionId
+            }
+        }, {
+            headers: {
+                'Authorization': `Bearer ${pat}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        return transitionResponse.status === 204;
+    } catch (error) {
+        console.error(`Error updating ${source} Jira task:, error`);
+        return false;
+    }
+}
 
 
 let interval = null;
