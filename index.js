@@ -328,20 +328,118 @@ async function fetchAndStoreJiraTasksFromSource(source, url, pat, jql) {
     }
 
 /**
- * Функция отправки задач в Telegram канал.
+ * Функция отправки задач в Telegram канал с заданным JQL фильтром.
  * @param {string} chatId - ID чата (канала), куда отправлять задачи.
+ * @param {string} jql - JQL запрос для выборки задач.
+ * @param {string} scheduleDescription - Описание расписания для логирования.
  */
-async function sendJiraTasksToChat(chatId) {
+async function sendFilteredJiraTasksToChat(chatId, jql, scheduleDescription) {
     const today = DateTime.now().setZone('Europe/Moscow').toFormat('yyyy-MM-dd');
 
     const query = `
         SELECT *
         FROM tasks
         WHERE archived = 0
-          AND (
-                department = 'Техническая поддержка'
-                OR issueType NOT IN ('Infra', 'Office', 'Prod') -- Исключаем неразрешённые типы
-              )
+          AND (${jql})
+          AND (lastSentDate IS NULL OR lastSentDate < date('${today}'))
+          AND date(dateAdded) >= date('now', '-30 days') -- Исключаем задачи старше 30 дней
+    `;
+
+    db.all(query, [], async (err, rows) => {
+        if (err) {
+            console.error(`sendFilteredJiraTasksToChat() error (${scheduleDescription}):`, err);
+            return;
+        }
+
+        for (const task of rows) {
+            const keyboard = new InlineKeyboard();
+            const jiraUrl = `https://jira.${task.source}.team/browse/${task.id}`;
+
+            // Добавляем кнопки "Взять в работу" и "Завершить", если issuetype разрешен
+            if (!nonEditableIssueTypes.includes(task.issueType)) {
+                keyboard
+                    .text('Взять в работу', `take_task:${task.id}`)
+                    .text('Завершить', `complete_task:${task.id}`)
+                    .row();
+            }
+
+            // Всегда добавляем кнопку "Перейти к задаче"
+            keyboard.url('Перейти к задаче', jiraUrl);
+
+            const messageText = `
+${task.department} - ${task.id}
+
+Взял в работу: ${task.assignee || 'Не назначен'}
+Название задачи: ${task.title}
+Приоритет: ${getPriorityEmoji(task.priority)}
+Тип задачи: ${task.issueType}
+            `.trim();
+
+            // Отправляем сообщение через Bottleneck
+            limiter.schedule(() => sendMessageWithRetry(chatId, messageText, { reply_markup: keyboard }))
+                .then(() => {
+                    // Обновляем поле lastSentDate после успешной отправки
+                    db.run('UPDATE tasks SET lastSentDate = ? WHERE id = ?', [getMoscowTimestamp(), task.id], function(err) {
+                        if (err) {
+                            console.error(`Error updating lastSentDate for task ${task.id}:`, err);
+                        } else {
+                            console.log(`lastSentDate updated for task ${task.id}.`);
+                        }
+                    });
+                })
+                .catch((error) => {
+                    console.error(`Failed to send message after retries (${task.id}):`, error);
+                });
+        }
+    });
+}
+
+/**
+ * Функция отправки задач "Техническая поддержка" со статусом "Open" раз в сутки.
+ */
+async function sendDailyTechnicalSupportTasks() {
+    const dailyJql = `
+        department = "Техническая поддержка" AND status = "Open"
+    `.replace(/\n/g, ' ').trim();
+
+    await sendFilteredJiraTasksToChat(process.env.ADMIN_CHAT_ID, dailyJql, 'Daily Technical Support Tasks');
+}
+
+/**
+ * Функция отправки задач с определёнными фильтрами раз в три дня.
+ */
+async function sendEveryThreeDaysSpecialTasks() {
+    const specialJql = `
+        (issuetype = Infra AND status = "Open") OR
+        (issuetype = Office AND status = "Under review") OR
+        (issuetype = Office AND status = "Waiting for support") OR
+        (issuetype = Prod AND status = "Waiting for Developers approval")
+    `.replace(/\n/g, ' ').trim();
+
+    await sendFilteredJiraTasksToChat(process.env.ADMIN_CHAT_ID, specialJql, 'Every Three Days Special Tasks');
+}
+
+/**
+ * Функция отправки задач в Telegram канал.
+ * @param {string} chatId - ID чата (канала), куда отправлять задачи.
+ */
+async function sendJiraTasksToChat(chatId) {
+    const today = DateTime.now().setZone('Europe/Moscow').toFormat('yyyy-MM-dd');
+
+    const generalJql = `
+        project = SUPPORT AND (
+            (issuetype = Infra AND status = "Open") OR
+            (issuetype = Office AND status in ("Under review", "Waiting for support")) OR
+            (issuetype = Prod AND status = "Waiting for Developers approval") OR
+            (department = "Техническая поддержка" AND status = "Open")
+        )
+    `.replace(/\n/g, ' ').trim();
+
+    const query = `
+        SELECT *
+        FROM tasks
+        WHERE archived = 0
+          AND (${generalJql})
           AND (lastSentDate IS NULL OR lastSentDate < date('${today}'))
           AND date(dateAdded) >= date('now', '-30 days') -- Исключаем задачи старше 30 дней
           AND date(dateAdded) = date('${today}') -- Отправляем только сегодняшние задачи
@@ -461,62 +559,113 @@ bot.callbackQuery(/^(take_task|complete_task):(.*)$/, async (ctx) => {
     }
 
     if (actionType === 'take_task') {
-        // Назначаем задачу пользователю в Jira
-        const success = await updateJiraAssignee(source, taskId, jiraUsername);
-        await ctx.answerCallbackQuery();
+        try {
+            // Назначаем задачу пользователю в Jira
+            const assignSuccess = await updateJiraAssignee(source, taskId, jiraUsername);
+            if (!assignSuccess) {
+                await ctx.reply('Ошибка назначения исполнителя в Jira.');
+                await ctx.answerCallbackQuery();
+                return;
+            }
 
-        if (success) {
+            // Определяем transitionId для перевода в статус "In Progress"
+            let transitionId;
+            if (source === 'sxl') {
+                transitionId = '221'; // Ваш transitionId для sxl (например, "In Progress")
+            } else if (source === 'betone') {
+                transitionId = '201'; // Ваш transitionId для betone
+            } else {
+                console.error('Invalid source specified');
+                await ctx.reply('Неверный источник задачи.');
+                await ctx.answerCallbackQuery();
+                return;
+            }
+
+            // Переводим задачу в статус "In Progress" или аналогичный
+            const transitionSuccess = await updateJiraTaskStatus(source, taskId, transitionId);
+            if (!transitionSuccess) {
+                await ctx.reply('Ошибка перевода задачи в статус "В процессе" в Jira.');
+                await ctx.answerCallbackQuery();
+                return;
+            }
+
+            // Обновляем поле lastSentDate
+            db.run('UPDATE tasks SET lastSentDate = ? WHERE id = ?', [getMoscowTimestamp(), taskId], function(err) {
+                if (err) {
+                    console.error(`Error updating lastSentDate for task ${taskId}:`, err);
+                } else {
+                    console.log(`lastSentDate updated for task ${taskId}.`);
+                }
+            });
+
             // Редактируем исходное сообщение, добавляя название задачи и кнопку перехода
             const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
             const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
-            try {
-                const updatedMessage = `
+            const updatedMessage = `
 ${department} - ${taskId}
 
 Взял в работу: ${realName}
 Название задачи: ${title}
 Приоритет: ${getPriorityEmoji(taskRow.priority)}
-Тип задачи: ${issueType}
-                `.trim();
-                await ctx.editMessageText(updatedMessage, { reply_markup: keyboard });
-            } catch (e) {
-                console.error('editMessageText(take_task) error:', e);
-            }
-        } else {
-            await ctx.reply('Ошибка назначения исполнителя в Jira.');
-        }
-    } else if (actionType === 'complete_task') {
-        // Переводим задачу в статус Done
-        const transitionId = '401'; // Ваш transitionId для перевода в Done
-        const success = await updateJiraTaskStatus(source, taskId, transitionId);
-        await ctx.answerCallbackQuery();
+Тип задачи: ${task.issueType}
+            `.trim();
 
-        if (success) {
+            await ctx.editMessageText(updatedMessage, { reply_markup: keyboard });
+            await ctx.answerCallbackQuery();
+
+        } catch (error) {
+            console.error('Error during take_task action:', error);
+            await ctx.reply('Произошла ошибка при взятии задачи в работу.');
+            await ctx.answerCallbackQuery();
+        }
+
+    } else if (actionType === 'complete_task') {
+        try {
+            // Переводим задачу в статус Done
+            const transitionId = '401'; // Ваш transitionId для перевода в Done
+            const transitionSuccess = await updateJiraTaskStatus(source, taskId, transitionId);
+            if (!transitionSuccess) {
+                await ctx.reply('Ошибка перевода задачи в статус Done в Jira.');
+                await ctx.answerCallbackQuery();
+                return;
+            }
+
             // Обновляем поле resolution
             const resolutionSuccess = await updateJiraTaskResolution(source, taskId, 'Done');
+            if (!resolutionSuccess) {
+                await ctx.reply('Ошибка при обновлении resolution в Jira.');
+                await ctx.answerCallbackQuery();
+                return;
+            }
 
-            if (resolutionSuccess) {
-                // Редактируем исходное сообщение, добавляя название задачи и кнопку перехода
-                const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
-                const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
-                try {
-                    const updatedMessage = `
+            // Обновляем поле lastSentDate
+            db.run('UPDATE tasks SET lastSentDate = ? WHERE id = ?', [getMoscowTimestamp(), taskId], function(err) {
+                if (err) {
+                    console.error(`Error updating lastSentDate for task ${taskId}:`, err);
+                } else {
+                    console.log(`lastSentDate updated for task ${taskId}.`);
+                }
+            });
+
+            // Редактируем исходное сообщение, добавляя название задачи и кнопку перехода
+            const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
+            const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
+            const updatedMessage = `
 ${department} - ${taskId}
 
 Завершил задачу: ${realName}
 Название задачи: ${title}
 Приоритет: ${getPriorityEmoji(taskRow.priority)}
-Тип задачи: ${issueType}
-                    `.trim();
-                    await ctx.editMessageText(updatedMessage, { reply_markup: keyboard });
-                } catch (e) {
-                    console.error('editMessageText(complete_task) error:', e);
-                }
-            } else {
-                await ctx.reply('Ошибка при обновлении resolution в Jira.');
-            }
-        } else {
-            await ctx.reply('Ошибка при переводе задачи в Done в Jira.');
+Тип задачи: ${task.issueType}
+            `.trim();
+
+            await ctx.editMessageText(updatedMessage, { reply_markup: keyboard });
+            await ctx.answerCallbackQuery();
+
+        } catch (error) {
+            console.error('Error during complete_task action:', error);
+            await ctx.reply('Произошла ошибка при завершении задачи.');
+            await ctx.answerCallbackQuery();
         }
     }
 });
@@ -532,7 +681,8 @@ bot.command('start', async (ctx) => {
         'Используй /report для отчёта по выполненным задачам.'
     );
     await fetchAndStoreJiraTasks();
-    await sendJiraTasksToChat(process.env.ADMIN_CHAT_ID);
+    await sendDailyTechnicalSupportTasks(); // Отправка ежедневных задач при запуске
+    await sendJiraTasksToChat(process.env.ADMIN_CHAT_ID); // Отправка общих задач при запуске
 });
 
 /**
@@ -657,7 +807,7 @@ async function updateJiraTaskStatus(source, taskId, transitionId) {
             }
         });
 
-        console.log(`Task ${taskId} transitioned to Done:`, response.status);
+        console.log(`Task ${taskId} transitioned:`, response.status);
         return true;
     } catch (error) {
         console.error(`updateJiraTaskStatus error for ${taskId}:`, error.response?.data || error);
@@ -970,7 +1120,7 @@ cron.schedule('0 9 * * *', async () => {
  */
 cron.schedule('* * * * *', async () => {
     console.log('Running cron job: fetchAndStoreJiraTasksFromSource every minute');
-    
+
     // JQL для общих задач (может быть адаптирован под ваши нужды)
     const generalJql = `
         project = SUPPORT AND (
@@ -989,7 +1139,37 @@ cron.schedule('* * * * *', async () => {
         generalJql
     );
 
-    // Можно добавить другие источники, если необходимо
+    // Пример для другого источника 'betone' (если необходимо)
+    /*
+    const betoneJql = `
+        project = BETONE AND (
+            ... ваш JQL для betone ...
+        )
+    `.replace(/\n/g, ' ').trim();
+
+    await fetchAndStoreJiraTasksFromSource(
+        'betone',
+        'https://jira.betone.team/rest/api/2/search',
+        process.env.JIRA_PAT_BETONE,
+        betoneJql
+    );
+    */
+});
+
+/**
+ * Cron-задача для отправки задач "Техническая поддержка" раз в сутки.
+ */
+cron.schedule('0 10 * * *', async () => { // Например, в 10:00 утра
+    console.log('Running cron job: sendDailyTechnicalSupportTasks');
+    await sendDailyTechnicalSupportTasks();
+});
+
+/**
+ * Cron-задача для отправки специальных задач каждые три дня.
+ */
+cron.schedule('0 12 */3 * *', async () => { // Например, в 12:00 дня каждые три дня
+    console.log('Running cron job: sendEveryThreeDaysSpecialTasks');
+    await sendEveryThreeDaysSpecialTasks();
 });
 
 /**
@@ -1004,7 +1184,7 @@ cron.schedule('*/5 * * * *', async () => {
 /**
  * Ежедневная очистка старых архивированных задач и связанных данных.
  */
-cron.schedule('0 0 * * *', () => {
+cron.schedule('0 0 * * *', () => { // В полночь
     console.log('Starting daily DB cleanup...');
 
     const cleanupQuery = `
