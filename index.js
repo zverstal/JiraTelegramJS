@@ -356,7 +356,9 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
 Приоритет: ${getPriorityEmoji(task.priority)}
 Отдел: ${task.department}
 Взял в работу: ${displayName}
-keyboard.url('Перейти к задаче', getTaskUrl(task.source, task.id))`;
+`;
+
+                    const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(task.source, task.id));
 
                     await ctx.editMessageText(messageText, { reply_markup: { inline_keyboard: [] } });
 
