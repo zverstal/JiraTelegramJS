@@ -327,7 +327,10 @@ async function fetchAndStoreTasksFromJira(source, url, pat) {
                 }
             );
         }
+    } catch (error) {
+        console.error(`Error fetching and storing tasks from ${source} Jira:`, error);
     }
+}
 
 /**
  * Функция отправки задач в Telegram канал.
