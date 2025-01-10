@@ -321,7 +321,7 @@ bot.command('report', async (ctx) => {
             return;
         }
 
-        let reportText = 'Отчет по завершенным задачам:\n\n';
+        let reportText = 'Отчет по завершенным задачам за 30 дней:\n\n';
         rows.forEach((row) => {
             const displayName = row.assignee || 'Не указан';
             reportText += `Исполнитель: ${displayName}, Количество: ${row.taskCount}\n`;
