@@ -298,11 +298,9 @@ cron.schedule('*/5 * * * *', () => {
 
 bot.command('report', async (ctx) => {
     const query = `
-        SELECT tc.assignee, COUNT(tc.taskId) AS commentCount
-        FROM task_comments tc
-        JOIN tasks t ON t.id = tc.taskId
-        WHERE t.department = "Техническая поддержка"
-        GROUP BY tc.assignee
+        SELECT assignee, COUNT(taskId) AS commentCount
+        FROM task_comments
+        GROUP BY assignee
         ORDER BY commentCount DESC
     `;
 
@@ -318,7 +316,7 @@ bot.command('report', async (ctx) => {
             return;
         }
 
-        let reportText = 'Отчет по комментариям к задачам технической поддержки:\n\n';
+        let reportText = 'Отчет по комментариям к задачам:\n\n';
         rows.forEach((row) => {
             const displayName = row.assignee || 'Не указан';
             reportText += `Исполнитель: ${displayName}, Комментариев: ${row.commentCount}\n`;
