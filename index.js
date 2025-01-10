@@ -292,6 +292,11 @@ async function checkForNewComments() {
     }
 }
 
+const limiter = new Bottleneck({
+    minTime: 2000, // Минимум 2 секунды между запросами
+    maxConcurrent: 1 // Один запрос одновременно
+});
+
 // Оборачиваем функцию отправки сообщений в лимитер
 const sendMessageWithLimiter = limiter.wrap(bot.api.sendMessage);
 
