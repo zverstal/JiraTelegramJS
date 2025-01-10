@@ -363,7 +363,7 @@ keyboard.url('Перейти к задаче', getTaskUrl(task.source, task.id))
                     db.run('INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)',
                         [ctx.from.username, taskId, 'take_task', getMoscowTimestamp()]);
                 } else {
-                    await ctx.reply(`Не удалось обновить статус задачи ${taskId}. Попробуйте снова.)`;
+                    await ctx.reply(`Не удалось обновить статус задачи ${taskId}. Попробуйте снова.`);
                 }
             } else {
                 await ctx.reply('Эта задача не для отдела Технической поддержки и не может быть взята в работу через этот бот.');
