@@ -434,7 +434,7 @@ bot.command('start', async (ctx) => {
     }
 
     if (!nightShiftCron) {
-        nightShiftCron = cron.schedule('0 21 * * *', async () => {
+        nightShiftCron = cron.schedule('0 01 * * *', async () => {
             await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, 'Доброй ночи! Заполни тикет передачи смены.');
         }, {
             scheduled: true,
