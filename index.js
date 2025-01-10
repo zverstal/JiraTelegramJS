@@ -216,6 +216,10 @@ async function checkForNewComments() {
         const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND status in (Done, Awaiting, "Awaiting implementation") AND updated >= -2d`;
         const sources = ['sxl', 'betone'];
 
+        // Получаем список авторов из jiraUserMappings
+        const excludedAuthors = Object.values(jiraUserMappings)
+            .flatMap(mapping => Object.values(mapping));
+
         for (const source of sources) {
             const url = `https://jira.${source}.team/rest/api/2/search`;
             const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
@@ -233,7 +237,7 @@ async function checkForNewComments() {
                 });
 
                 const issues = response.data.issues;
-                total = response.data.total; // Общее количество задач
+                total = response.data.total;
 
                 for (const issue of issues) {
                     const taskId = issue.key;
@@ -244,11 +248,9 @@ async function checkForNewComments() {
 
                     const lastComment = comments[comments.length - 1];
                     const lastCommentId = lastComment.id;
+                    const author = lastComment.author?.name || 'Не указан';
 
-                    // Получаем исполнителя задачи
-                    const assignee = issue.fields.assignee ? issue.fields.assignee.displayName : 'Не указан';
-
-                    // Получаем последний сохраненный комментарий из базы
+                    // Если задача новая или комментарий обновился
                     db.get('SELECT lastCommentId FROM task_comments WHERE taskId = ?', [taskId], (err, row) => {
                         if (err) {
                             console.error('Error fetching last comment from DB:', err);
@@ -256,48 +258,61 @@ async function checkForNewComments() {
                         }
 
                         if (!row) {
-                            // Первый запуск: сохраняем последний комментарий и assignee
+                            // Если задача новая и комментарий не от excludedAuthors, отправляем сообщение
+                            if (!excludedAuthors.includes(author)) {
+                                sendTelegramMessage(taskId, source, issue, lastComment, author);
+                            }
+
+                            // Добавляем задачу в базу
                             db.run(
                                 'INSERT INTO task_comments (taskId, lastCommentId, assignee) VALUES (?, ?, ?)',
-                                [taskId, lastCommentId, assignee]
+                                [taskId, lastCommentId, issue.fields.assignee?.displayName || 'Не указан']
                             );
                         } else if (row.lastCommentId !== lastCommentId) {
-                            // Новый комментарий найден, обновляем lastCommentId и assignee
+                            // Если комментарий новый и не от excludedAuthors, отправляем сообщение
+                            if (!excludedAuthors.includes(author)) {
+                                sendTelegramMessage(taskId, source, issue, lastComment, author);
+                            }
+
+                            // Обновляем комментарий в базе
                             db.run(
                                 'UPDATE task_comments SET lastCommentId = ?, assignee = ? WHERE taskId = ?',
-                                [lastCommentId, assignee, taskId]
+                                [lastCommentId, issue.fields.assignee?.displayName || 'Не указан', taskId]
                             );
-
-                            // Отправляем сообщение в бот
-                            const keyboard = new InlineKeyboard();
-                            keyboard.url('Перейти к задаче', getTaskUrl(source, taskId));
-
-                            const messageText = `Задача: ${taskId}
-Источник: ${source}
-Ссылка: ${getTaskUrl(source, taskId)}
-Описание: ${issue.fields.summary}
-Приоритет: ${issue.fields.priority?.name || 'Не указан'}
-Тип задачи: ${issue.fields.issuetype?.name || 'Не указан'}
-Исполнитель: ${assignee}
-Автор комментария: ${lastComment.author.displayName}
-Комментарий: ${lastComment.body}`;
-
-                            bot.api.sendMessage(process.env.ADMIN_CHAT_ID, messageText, {
-                                reply_markup: keyboard
-                            }).catch(err => {
-                                console.error('Error sending message to Telegram:', err);
-                            });
                         }
                     });
                 }
 
-                // Увеличиваем стартовый индекс для следующей страницы
                 startAt += 50;
             } while (startAt < total);
         }
     } catch (error) {
         console.error('Error checking for new comments:', error);
     }
+}
+
+// Функция для отправки сообщения в Telegram
+function sendTelegramMessage(taskId, source, issue, lastComment, author) {
+    const keyboard = new InlineKeyboard();
+    keyboard.url('Перейти к задаче', getTaskUrl(source, taskId));
+
+    const messageText = `В задаче появился новый комментарий:
+
+Задача: ${taskId}
+Источник: ${source}
+Ссылка: ${getTaskUrl(source, taskId)}
+Описание: ${issue.fields.summary}
+Приоритет: ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}
+Тип задачи: ${issue.fields.issuetype?.name || 'Не указан'}
+Исполнитель: ${issue.fields.assignee?.displayName || 'Не указан'}
+Автор комментария: ${author}
+Комментарий: ${lastComment.body}`;
+
+    bot.api.sendMessage(process.env.ADMIN_CHAT_ID, messageText, {
+        reply_markup: keyboard
+    }).catch(err => {
+        console.error('Error sending message to Telegram:', err);
+    });
 }
 
 
