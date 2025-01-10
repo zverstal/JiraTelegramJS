@@ -4,6 +4,7 @@ const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
 const { DateTime } = require('luxon');
 const cron = require('node-cron');
+const Bottleneck = require('bottleneck');
 
 const bot = new Bot(process.env.BOT_API_KEY);
 const db = new sqlite3.Database('tasks.db');
@@ -290,6 +291,9 @@ async function checkForNewComments() {
     }
 }
 
+// Оборачиваем функцию отправки сообщений в лимитер
+const sendMessageWithLimiter = limiter.wrap(bot.api.sendMessage);
+
 // Функция для отправки сообщения в Telegram
 function sendTelegramMessage(taskId, source, issue, lastComment, author) {
     const keyboard = new InlineKeyboard();
@@ -307,7 +311,7 @@ function sendTelegramMessage(taskId, source, issue, lastComment, author) {
 Автор комментария: ${author}
 Комментарий: ${lastComment.body}`;
 
-    bot.api.sendMessage(process.env.ADMIN_CHAT_ID, messageText, {
+    sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, messageText, {
         reply_markup: keyboard
     }).catch(err => {
         console.error('Error sending message to Telegram:', err);
