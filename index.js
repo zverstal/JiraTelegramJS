@@ -172,9 +172,7 @@ async function sendJiraTasks(ctx) {
 }
 
 bot.command('start', async (ctx) => {
-    await ctx.reply('Привет! Я буду сообщать о новых задачах и уведомлять о комментариях. Используйте команды:
-
-/report - Отчёт по выполненным задачам.');
+    await ctx.reply('Привет! Я буду сообщать о новых задачах и уведомлять о комментариях. Используйте команды: /report - Отчёт по выполненным задачам.');
     fetchAndStoreJiraTasks();
     sendJiraTasks(ctx);
 
