@@ -300,12 +300,6 @@ bot.command('report', async (ctx) => {
     const query = `
         SELECT assignee, COUNT(taskId) AS taskCount
         FROM task_comments
-        WHERE taskId IN (
-            SELECT id
-            FROM task_comments
-            WHERE lastCommentId IS NOT NULL
-        )
-        GROUP BY assignee
         ORDER BY taskCount DESC
     `;
 
