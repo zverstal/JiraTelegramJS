@@ -167,18 +167,27 @@ async function fetchAndStoreTasksFromJira(source, url, pat) {
     try {
         console.log(`Fetching tasks from ${source} Jira...`);
 
-        // Определение departmentQuery
-        const departmentQuery = 'Техническая поддержка'; // Замените на вашу логику, если необходимо
+        // Здесь вы можете определить departmentQuery в зависимости от вашего контекста
+        // Например, если у вас есть переменная, определяющая отдел, используйте её
+        const departmentQuery = 'Техническая поддержка'; // Замените на вашу логику
 
-        // Формирование JQL согласно вашей логике
-        const jql = `
-            project = SUPPORT AND (
-                (issuetype = Infra AND status = "Open") OR
-                (issuetype = Office AND status in ("Under review", "Waiting for support")) OR
-                (issuetype = Prod AND status = "Waiting for Developers approval") OR
-                (Отдел = "${departmentQuery}" AND status = "Open")
-            )
-        `;
+        let jql = '';
+
+        if (departmentQuery) {
+            jql = `
+                project = SUPPORT AND (
+                    (issuetype = Infra AND status = "Open") OR
+                    (issuetype = Office AND status = "Under review") OR
+                    (issuetype = Office AND status = "Waiting for support") OR
+                    (issuetype = Prod AND status = "Waiting for Developers approval") OR
+                    (Отдел = "${departmentQuery}" AND status = "Open")
+                )
+            `;
+        } else {
+            jql = `
+                project = SUPPORT AND (Отдел = "${departmentQuery}") AND status = "Open"
+            `;
+        }
 
         const response = await axios.get(url, {
             headers: {
