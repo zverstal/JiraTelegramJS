@@ -277,4 +277,16 @@ cron.schedule('0 9 * * *', async () => {
     await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, 'Доброе утро! Проверь задачи на сегодня и начни смену.');
 });
 
+bot.command('start', async (ctx) => {
+    await ctx.reply('Привет! Я буду сообщать о новых задачах и уведомлять о комментариях. Используйте команды: /report для отчёта по выполненным задачам.');
+    fetchAndStoreJiraTasks();
+    sendJiraTasks(ctx);
+
+    cron.schedule('*/10 * * * *', async () => {
+        console.log('Checking for new tasks...');
+        await fetchAndStoreJiraTasks();
+        await sendJiraTasks(ctx);
+    });
+});
+
 bot.start();
