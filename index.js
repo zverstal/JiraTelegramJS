@@ -213,7 +213,7 @@ async function sendJiraTasks(ctx) {
 
 async function checkForNewComments() {
     try {
-        const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND resolution = Done`;
+        const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND resolution = Done And status in (Done, Awaiting, "Awaiting implementation") and updated >= -30d`;
         const sources = ['sxl', 'betone'];
 
         for (const source of sources) {
@@ -298,10 +298,15 @@ cron.schedule('*/5 * * * *', () => {
 
 bot.command('report', async (ctx) => {
     const query = `
-        SELECT assignee, COUNT(taskId) AS commentCount
+        SELECT assignee, COUNT(taskId) AS taskCount
         FROM task_comments
+        WHERE taskId IN (
+            SELECT id
+            FROM task_comments
+            WHERE lastCommentId IS NOT NULL
+        )
         GROUP BY assignee
-        ORDER BY commentCount DESC
+        ORDER BY taskCount DESC
     `;
 
     db.all(query, [], (err, rows) => {
@@ -316,15 +321,16 @@ bot.command('report', async (ctx) => {
             return;
         }
 
-        let reportText = 'Отчет по комментариям к задачам:\n\n';
+        let reportText = 'Отчет по завершенным задачам на основе комментариев:\n\n';
         rows.forEach((row) => {
             const displayName = row.assignee || 'Не указан';
-            reportText += `Исполнитель: ${displayName}, Выполнено задач: ${row.commentCount}\n`;
+            reportText += `Исполнитель: ${displayName}, Задач с комментариями: ${row.taskCount}\n`;
         });
 
         ctx.reply(reportText);
     });
 });
+
 
 
 let interval = null;
