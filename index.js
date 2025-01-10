@@ -72,7 +72,6 @@ const usernameMappings = {
 };
 
 const jiraUserMappings = {
-    "lipchinski": { "sxl": "d.selivanov", "betone": "dms" },
     "pr0spal": { "sxl": "e.shushkov", "betone": "es" },
     "fdhsudgjdgkdfg": { "sxl": "d.maslov", "betone": "dam" },
     "EuroKaufman": { "sxl": "d.baratov", "betone": "db" },
