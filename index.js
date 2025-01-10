@@ -296,6 +296,38 @@ cron.schedule('*/5 * * * *', () => {
     checkForNewComments();
 });
 
+bot.command('report', async (ctx) => {
+    const query = `
+        SELECT tc.assignee, COUNT(tc.taskId) AS commentCount
+        FROM task_comments tc
+        JOIN tasks t ON t.id = tc.taskId
+        WHERE t.department = "Техническая поддержка"
+        GROUP BY tc.assignee
+        ORDER BY commentCount DESC
+    `;
+
+    db.all(query, [], (err, rows) => {
+        if (err) {
+            console.error('Error generating report:', err);
+            ctx.reply('Произошла ошибка при генерации отчета.');
+            return;
+        }
+
+        if (rows.length === 0) {
+            ctx.reply('Нет данных для формирования отчета.');
+            return;
+        }
+
+        let reportText = 'Отчет по комментариям к задачам технической поддержки:\n\n';
+        rows.forEach((row) => {
+            const displayName = row.assignee || 'Не указан';
+            reportText += `Исполнитель: ${displayName}, Комментариев: ${row.commentCount}\n`;
+        });
+
+        ctx.reply(reportText);
+    });
+});
+
 
 let interval = null;
 let nightShiftCron = null;
