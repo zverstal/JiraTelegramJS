@@ -213,61 +213,66 @@ async function sendJiraTasks(ctx) {
 
 async function checkForNewComments() {
     try {
-        const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND status in (Done, Awaiting, "Awaiting implementation") and updated >= -30d`;
+        const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND status in (Done, Awaiting, "Awaiting implementation") AND updated >= -30d`;
         const sources = ['sxl', 'betone'];
 
         for (const source of sources) {
             const url = `https://jira.${source}.team/rest/api/2/search`;
             const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
 
-            const response = await axios.get(url, {
-                headers: {
-                    'Authorization': `Bearer ${pat}`,
-                    'Accept': 'application/json'
-                },
-                params: { jql, maxResults: 1000, startAt: 0, fields: 'comment,assignee,summary,priority,issuetype' }
-            });
+            let startAt = 0;
+            let total = 0;
 
-            const issues = response.data.issues;
+            do {
+                const response = await axios.get(url, {
+                    headers: {
+                        'Authorization': `Bearer ${pat}`,
+                        'Accept': 'application/json'
+                    },
+                    params: { jql, maxResults: 50, startAt, fields: 'comment,assignee,summary,priority,issuetype' }
+                });
 
-            for (const issue of issues) {
-                const taskId = issue.key;
+                const issues = response.data.issues;
+                total = response.data.total; // Общее количество задач
 
-                // Получаем последний комментарий
-                const comments = issue.fields.comment.comments;
-                if (comments.length === 0) continue;
+                for (const issue of issues) {
+                    const taskId = issue.key;
 
-                const lastComment = comments[comments.length - 1];
-                const lastCommentId = lastComment.id;
+                    // Получаем последний комментарий
+                    const comments = issue.fields.comment.comments;
+                    if (comments.length === 0) continue;
 
-                // Получаем исполнителя задачи
-                const assignee = issue.fields.assignee ? issue.fields.assignee.displayName : 'Не указан';
+                    const lastComment = comments[comments.length - 1];
+                    const lastCommentId = lastComment.id;
 
-                // Получаем последний сохраненный комментарий из базы
-                db.get('SELECT lastCommentId FROM task_comments WHERE taskId = ?', [taskId], (err, row) => {
-                    if (err) {
-                        console.error('Error fetching last comment from DB:', err);
-                        return;
-                    }
+                    // Получаем исполнителя задачи
+                    const assignee = issue.fields.assignee ? issue.fields.assignee.displayName : 'Не указан';
 
-                    if (!row) {
-                        // Первый запуск: сохраняем последний комментарий и assignee
-                        db.run(
-                            'INSERT INTO task_comments (taskId, lastCommentId, assignee) VALUES (?, ?, ?)',
-                            [taskId, lastCommentId, assignee]
-                        );
-                    } else if (row.lastCommentId !== lastCommentId) {
-                        // Новый комментарий найден, обновляем lastCommentId и assignee
-                        db.run(
-                            'UPDATE task_comments SET lastCommentId = ?, assignee = ? WHERE taskId = ?',
-                            [lastCommentId, assignee, taskId]
-                        );
+                    // Получаем последний сохраненный комментарий из базы
+                    db.get('SELECT lastCommentId FROM task_comments WHERE taskId = ?', [taskId], (err, row) => {
+                        if (err) {
+                            console.error('Error fetching last comment from DB:', err);
+                            return;
+                        }
 
-                        // Отправляем сообщение в бот
-                        const keyboard = new InlineKeyboard();
-                        keyboard.url('Перейти к задаче', getTaskUrl(source, taskId));
+                        if (!row) {
+                            // Первый запуск: сохраняем последний комментарий и assignee
+                            db.run(
+                                'INSERT INTO task_comments (taskId, lastCommentId, assignee) VALUES (?, ?, ?)',
+                                [taskId, lastCommentId, assignee]
+                            );
+                        } else if (row.lastCommentId !== lastCommentId) {
+                            // Новый комментарий найден, обновляем lastCommentId и assignee
+                            db.run(
+                                'UPDATE task_comments SET lastCommentId = ?, assignee = ? WHERE taskId = ?',
+                                [lastCommentId, assignee, taskId]
+                            );
 
-                        const messageText = `Задача: ${taskId}
+                            // Отправляем сообщение в бот
+                            const keyboard = new InlineKeyboard();
+                            keyboard.url('Перейти к задаче', getTaskUrl(source, taskId));
+
+                            const messageText = `Задача: ${taskId}
 Источник: ${source}
 Ссылка: ${getTaskUrl(source, taskId)}
 Описание: ${issue.fields.summary}
@@ -277,19 +282,24 @@ async function checkForNewComments() {
 Автор комментария: ${lastComment.author.displayName}
 Комментарий: ${lastComment.body}`;
 
-                        bot.api.sendMessage(process.env.ADMIN_CHAT_ID, messageText, {
-                            reply_markup: keyboard
-                        }).catch(err => {
-                            console.error('Error sending message to Telegram:', err);
-                        });
-                    }
-                });
-            }
+                            bot.api.sendMessage(process.env.ADMIN_CHAT_ID, messageText, {
+                                reply_markup: keyboard
+                            }).catch(err => {
+                                console.error('Error sending message to Telegram:', err);
+                            });
+                        }
+                    });
+                }
+
+                // Увеличиваем стартовый индекс для следующей страницы
+                startAt += 50;
+            } while (startAt < total);
         }
     } catch (error) {
         console.error('Error checking for new comments:', error);
     }
 }
+
 
 cron.schedule('*/5 * * * *', () => {
     console.log('Checking for new comments...');
@@ -298,9 +308,10 @@ cron.schedule('*/5 * * * *', () => {
 
 bot.command('report', async (ctx) => {
     const query = `
-        SELECT assignee, COUNT(taskId) AS taskCount
+        SELECT LOWER(assignee) AS normalizedAssignee, COUNT(taskId) AS taskCount
         FROM task_comments
-        GROUP BY assignee
+        WHERE assignee IS NOT NULL
+        GROUP BY normalizedAssignee
         ORDER BY taskCount DESC
     `;
 
@@ -318,8 +329,12 @@ bot.command('report', async (ctx) => {
 
         let reportText = 'Отчет по завершенным задачам за 30 дней:\n\n';
         rows.forEach((row) => {
-            const displayName = row.assignee || 'Не указан';
-            reportText += `Исполнитель: ${displayName}, Количество: ${row.taskCount}\n`;
+            const displayName = row.normalizedAssignee || 'Не указан';
+            const formattedName = displayName
+                .split(' ')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                .join(' '); // Преобразуем имя в нормальный формат
+            reportText += `Исполнитель: ${formattedName}, Количество: ${row.taskCount}\n`;
         });
 
         ctx.reply(reportText);
