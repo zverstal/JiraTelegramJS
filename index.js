@@ -167,27 +167,32 @@ async function fetchAndStoreTasksFromJira(source, url, pat) {
     try {
         console.log(`Fetching tasks from ${source} Jira...`);
 
-        // Здесь вы можете определить departmentQuery в зависимости от вашего контекста
-        // Например, если у вас есть переменная, определяющая отдел, используйте её
-        const departmentQuery = 'Техническая поддержка'; // Замените на вашу логику
-
+        // Определение JQL в зависимости от источника
         let jql = '';
-
-        if (departmentQuery) {
+        if (source === 'sxl') {
+            // JQL для sxl, включает фильтрацию по issuetype и департаменту
             jql = `
                 project = SUPPORT AND (
                     (issuetype = Infra AND status = "Open") OR
-                    (issuetype = Office AND status = "Under review") OR
-                    (issuetype = Office AND status = "Waiting for support") OR
+                    (issuetype = Office AND status in ("Under review", "Waiting for support")) OR
                     (issuetype = Prod AND status = "Waiting for Developers approval") OR
-                    (Отдел = "${departmentQuery}" AND status = "Open")
+                    (Отдел = "Техническая поддержка" AND status = "Open")
+                )
+            `;
+        } else if (source === 'betone') {
+            // Упрощенный JQL для betone, только департамент и статус
+            jql = `
+                project = SUPPORT AND (
+                    Отдел = "Техническая поддержка" AND status = "Open"
                 )
             `;
         } else {
-            jql = `
-                project = SUPPORT AND (Отдел = "${departmentQuery}") AND status = "Open"
-            `;
+            console.warn(`Unknown source "${source}". Skipping fetch.`);
+            return;
         }
+
+        // Удаление лишних пробелов и переводов строк
+        jql = jql.replace(/\n/g, ' ').trim();
 
         const response = await axios.get(url, {
             headers: {
@@ -322,10 +327,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat) {
                 }
             );
         }
-    } catch (error) {
-        console.error(`Error fetching and storing tasks from ${source} Jira:`, error);
     }
-}
 
 /**
  * Функция отправки задач в Telegram канал.
