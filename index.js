@@ -319,7 +319,7 @@ bot.command('report', async (ctx) => {
         let reportText = 'Отчет по комментариям к задачам:\n\n';
         rows.forEach((row) => {
             const displayName = row.assignee || 'Не указан';
-            reportText += `Исполнитель: ${displayName}, Комментариев: ${row.commentCount}\n`;
+            reportText += `Исполнитель: ${displayName}, Выполнено задач: ${row.commentCount}\n`;
         });
 
         ctx.reply(reportText);
