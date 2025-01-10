@@ -296,4 +296,50 @@ cron.schedule('*/5 * * * *', () => {
     checkForNewComments();
 });
 
+// Команда /start для запуска бота
+bot.command('start', async (ctx) => {
+    await ctx.reply('Привет! Каждую минуту я буду проверять новые задачи...');
+
+    if (!interval) {
+        interval = setInterval(async () => {
+            console.log('Interval triggered. Sending Jira tasks...');
+            await fetchAndStoreJiraTasks();
+            await sendJiraTasks(ctx);
+            console.log('Jira tasks sent.');
+        }, 60000);
+    } else {
+        await ctx.reply('Интервал уже запущен.');
+    }
+
+    if (!nightShiftCron) {
+        nightShiftCron = cron.schedule('0 21 * * *', async () => {
+            await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, 'Доброй ночи! Заполни тикет передачи смены.');
+        }, {
+            scheduled: true,
+            timezone: "Europe/Moscow"
+        });
+
+        if (!morningShiftCron) {
+            morningShiftCron = cron.schedule('0 10 * * *', async () => {
+                await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, 'Доброе утро! Не забудь проверить задачи на сегодня: заполни тикет передачи смены.');
+            }, {
+                scheduled: true,
+                timezone: "Europe/Moscow"
+            });
+        }
+
+        nightShiftCron.start();
+        morningShiftCron.start();
+    }
+
+    // Проверяем наличие комментариев и выполняем вставку или обновление
+    db.all('SELECT taskId FROM task_comments', [], async (err, rows) => {
+        if (err) {
+            console.error('Error fetching task comments:', err);
+            return;
+        }
+        console.log(`Total task_comments in database: ${rows.length}`);
+    });
+});
+
 bot.start();
