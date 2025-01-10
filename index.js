@@ -326,6 +326,55 @@ bot.command('report', async (ctx) => {
     });
 });
 
+
+bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
+    try {
+        const taskId = ctx.match[1];
+        const username = ctx.from.username;
+
+        db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
+            if (err) {
+                console.error('Ошибка при получении задачи из базы данных:', err);
+                await ctx.reply('Произошла ошибка при обработке вашего запроса.');
+                return;
+            }
+
+            if (!task) {
+                await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+                await ctx.reply('Задача не найдена.');
+                return;
+            }
+
+            if (task.department === "Техническая поддержка") {
+                const success = await updateJiraTaskStatus(task.source, taskId, username);
+                if (success) {
+                    const displayName = usernameMappings[ctx.from.username] || ctx.from.username;
+                    const messageText = `Задача: ${task.id}
+Источник: ${task.source}
+Ссылка: ${getTaskUrl(task.source, task.id)}
+Описание: ${task.title}
+Приоритет: ${getPriorityEmoji(task.priority)}
+Отдел: ${task.department}
+Взял в работу: ${displayName}
+keyboard.url('Перейти к задаче', getTaskUrl(task.source, task.id))`;
+
+                    await ctx.editMessageText(messageText, { reply_markup: { inline_keyboard: [] } });
+
+                    db.run('INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)',
+                        [ctx.from.username, taskId, 'take_task', getMoscowTimestamp()]);
+                } else {
+                    await ctx.reply(`Не удалось обновить статус задачи ${taskId}. Попробуйте снова.)`;
+                }
+            } else {
+                await ctx.reply('Эта задача не для отдела Технической поддержки и не может быть взята в работу через этот бот.');
+            }
+        });
+    } catch (error) {
+        console.error('Ошибка в обработчике take_task:', error);
+        await ctx.reply('Произошла ошибка при обработке вашего запроса.');
+    }
+});
+
 // Функция для обновления статуса задачи в Jira
 async function updateJiraTaskStatus(source, taskId, telegramUsername) {
     try {
