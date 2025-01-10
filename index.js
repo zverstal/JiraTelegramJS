@@ -298,7 +298,15 @@ const limiter = new Bottleneck({
 });
 
 // Оборачиваем функцию отправки сообщений в лимитер
-const sendMessageWithLimiter = limiter.wrap(bot.api.sendMessage);
+const sendMessageWithLimiter = limiter.wrap(async (chatId, messageText, options) => {
+    try {
+        console.log(`Sending message to Telegram: ${messageText}`);
+        await bot.api.sendMessage(chatId, messageText, options);
+    } catch (error) {
+        console.error('Error in sendMessageWithLimiter:', error);
+        throw error;
+    }
+});
 
 // Функция для отправки сообщения в Telegram
 function sendTelegramMessage(taskId, source, issue, lastComment, author) {
@@ -312,7 +320,7 @@ function sendTelegramMessage(taskId, source, issue, lastComment, author) {
 Ссылка: ${getTaskUrl(source, taskId)}
 Описание: ${issue.fields.summary}
 Приоритет: ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}
-Тип задачи: ${issue.fields.issuetype?.name || 'Не указан'}
+Тип задачи: ${issue.fields.issuetype?.name || 'Не указан')}
 Исполнитель: ${issue.fields.assignee?.displayName || 'Не указан'}
 Автор комментария: ${author}
 Комментарий: ${lastComment.body}`;
