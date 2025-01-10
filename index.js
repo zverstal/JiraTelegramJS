@@ -150,9 +150,14 @@ async function fetchAndStoreJiraTasks() {
 }
 
 /**
- * Получаем актуальные задачи (Open, Under review, Waiting..., Done), 
- * ставим archived=0 для пришедших. 
+ * Получаем актуальные задачи (Open, Under review, Waiting..., Done),
+ * ставим archived=0 для пришедших.
  * Остальные (не пришедшие) – помечаем archived=1, archivedDate=now.
+ *
+ * ВАЖНО: Исправили логику определения поля department:
+ *  - Для 'sxl' берём fields.customfield_10500?.value
+ *  - Для 'betone' берём fields.customfield_10504?.value
+ *  - По необходимости замените поля на те, которые реально используются в ваших Jira.
  */
 async function fetchAndStoreTasksFromJira(source, url, pat) {
     try {
@@ -176,7 +181,17 @@ async function fetchAndStoreTasksFromJira(source, url, pat) {
         // Обновляем / вставляем задачи из Jira
         for (const issue of fetchedIssues) {
             const fields = issue.fields;
-            const department = fields.customfield_10504?.value || 'Не указан';
+
+            // Логика определения department в зависимости от source
+            let department = 'Не указан';
+            if (source === 'sxl') {
+                // Например, для SXL используем customfield_10500
+                department = fields.customfield_10500?.value || 'Не указан';
+            } else if (source === 'betone') {
+                // Для BetOne используем customfield_10504
+                department = fields.customfield_10504?.value || 'Не указан';
+            }
+
             const resolution = fields.resolution?.name || '';
             const assigneeKey = fields.assignee?.name || '';  // например "d.selivanov"
             const assigneeName = mapAssigneeToName(assigneeKey);
@@ -211,7 +226,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat) {
                          resolution = ?,
                          assignee = ?,
                          source = ?,
-                         archived = 0            -- снимаем флаг архивирования
+                         archived = 0 -- снимаем флаг архивирования
                      WHERE id = ?`,
                     [
                         taskData.title,
@@ -315,6 +330,7 @@ async function sendJiraTasks(ctx) {
             const keyboard = new InlineKeyboard();
             const jiraUrl = `https://jira.${task.source}.team/browse/${task.id}`;
 
+            // Проверяем: department === 'Техническая поддержка'
             if (task.department === 'Техническая поддержка') {
                 keyboard
                     .text('Взять в работу', `take_task:${task.id}`)
@@ -406,7 +422,7 @@ async function checkNewCommentsInDoneTasks() {
             FROM tasks
             WHERE department = 'Техническая поддержка'
               AND resolution = 'Done'
-              AND archived = 0  -- можно проверять и archived=1, если хотите
+              AND archived = 0
         `;
 
         db.all(query, [], async (err, tasks) => {
@@ -504,7 +520,6 @@ async function checkNewCommentsInDoneTasks() {
 /**
  * /report — статистика по выполненным задачам (Done, Техподдержка) за 30 дней.
  * Учитываются и архивные, и неархивные. 
- * Т.к. нет условия archived=0, берём все.
  */
 bot.command('report', async (ctx) => {
     try {
