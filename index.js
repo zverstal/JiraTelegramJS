@@ -320,7 +320,7 @@ function sendTelegramMessage(taskId, source, issue, lastComment, author) {
 Ссылка: ${getTaskUrl(source, taskId)}
 Описание: ${issue.fields.summary}
 Приоритет: ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}
-Тип задачи: ${issue.fields.issuetype?.name || 'Не указан')}
+Тип задачи: ${(issue.fields.issuetype?.name || 'Не указан')}
 Исполнитель: ${issue.fields.assignee?.displayName || 'Не указан'}
 Автор комментария: ${author}
 Комментарий: ${lastComment.body}`;
