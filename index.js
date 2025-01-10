@@ -160,10 +160,19 @@ async function fetchAndStoreTasksFromJira(source, url, pat) {
     try {
         console.log(`Fetching tasks from ${source} Jira...`);
 
+        // Определение departmentQuery
+        const departmentQuery = 'Техническая поддержка'; // Замените на вашу логику, если необходимо
+
+        // Формирование JQL согласно вашей логике
         const jql = `
-            project = SUPPORT
-            AND status in ("Open", "Under review", "Waiting for support", "Waiting for Developers approval", "Done")
+            project = SUPPORT AND (
+                (issuetype = Infra AND status = "Open") OR
+                (issuetype = Office AND status in ("Under review", "Waiting for support")) OR
+                (issuetype = Prod AND status = "Waiting for Developers approval") OR
+                (Отдел = "${departmentQuery}" AND status = "Open")
+            )
         `;
+
         const response = await axios.get(url, {
             headers: {
                 'Authorization': `Bearer ${pat}`,
@@ -313,20 +322,10 @@ async function sendJiraTasksToChat(chatId) {
         FROM tasks
         WHERE archived = 0
           AND (
-              (
-                  department = 'Техническая поддержка'
-                  AND (lastSent IS NULL OR lastSent < date('${today}'))
-              )
-              OR
-              (
-                  issueType IN ('Infra', 'Office', 'Prod')
-                  AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days'))
-              )
+              (department = 'Техническая поддержка' AND issueType IN ('Infra', 'Office', 'Prod') AND (lastSent IS NULL OR lastSent < date('${today}'))) OR
+              (issueType IN ('Infra', 'Office', 'Prod') AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days')))
           )
-        ORDER BY CASE 
-            WHEN department = 'Техническая поддержка' THEN 1 
-            ELSE 2 
-        END
+          AND dateAdded >= date('now', '-30 days') -- Исключаем задачи старше 30 дней
     `;
 
     db.all(query, [], async (err, rows) => {
@@ -339,19 +338,13 @@ async function sendJiraTasksToChat(chatId) {
             const keyboard = new InlineKeyboard();
             const jiraUrl = `https://jira.${task.source}.team/browse/${task.id}`;
 
-            // Создаём кнопки в зависимости от департамента и типа задачи
-            if (task.department === 'Техническая поддержка') {
-                keyboard
-                    .text('Взять в работу', `take_task:${task.id}`)
-                    .text('Комментарий', `comment_task:${task.id}`)
-                    .text('Завершить', `complete_task:${task.id}`)
-                    .row()
-                    .url('Перейти к задаче', jiraUrl);
-            } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
-                keyboard.url('Перейти к задаче', jiraUrl);
-            } else {
-                keyboard.url('Перейти к задаче', jiraUrl);
-            }
+            // Создаём кнопки
+            keyboard
+                .text('Взять в работу', `take_task:${task.id}`)
+                .text('Комментарий', `comment_task:${task.id}`)
+                .text('Завершить', `complete_task:${task.id}`)
+                .row()
+                .url('Перейти к задаче', jiraUrl);
 
             const messageText = `
 Задача: ${task.id}
@@ -511,7 +504,7 @@ async function commentConversation(conversation, ctx) {
         // Если не удалось найти сообщение для редактирования
         const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
         const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
-        await ctx.reply(`${taskRow.department}\n\nКомментарий добавлен: ${realName}`, { reply_markup: keyboard });
+        await ctx.reply(`${taskRow.department}\n\nКомментарий добавлен: ${realName}\n\nНазвание задачи: ${taskRow.title}`, { reply_markup: keyboard });
     }
 }
 
@@ -715,6 +708,7 @@ async function checkNewCommentsInDoneTasks() {
             WHERE department = 'Техническая поддержка'
               AND resolution = 'Done'
               AND archived = 0
+              AND dateAdded >= date('now', '-30 days') -- Исключаем старые задачи
         `;
 
         db.all(query, [], async (err, tasks) => {
