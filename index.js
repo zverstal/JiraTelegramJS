@@ -492,21 +492,26 @@ async function commentConversation(conversation, ctx) {
         return;
     }
 
-    // Редактируем исходное сообщение
+    // Редактируем исходное сообщение, добавляя название задачи и кнопку перехода
     const callbackMsg = ctx.callbackQuery?.message;
     if (callbackMsg) {
+        const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
+        const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
         try {
             await bot.api.editMessageText(
                 callbackMsg.chat.id,
                 callbackMsg.message_id,
-                `${taskRow.department}\n\nКомментарий добавлен: ${realName}`
+                `${taskRow.department}\n\nКомментарий добавлен: ${realName}\n\nНазвание задачи: ${taskRow.title}`,
+                { reply_markup: keyboard }
             );
         } catch (e) {
             console.error('editMessageText (comment) error:', e);
         }
     } else {
         // Если не удалось найти сообщение для редактирования
-        await ctx.reply(`${taskRow.department}\n\nКомментарий добавлен: ${realName}`);
+        const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
+        const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
+        await ctx.reply(`${taskRow.department}\n\nКомментарий добавлен: ${realName}`, { reply_markup: keyboard });
     }
 }
 
@@ -538,7 +543,7 @@ bot.callbackQuery(/^(take_task|comment_task|complete_task):(.*)$/, async (ctx) =
         return;
     }
 
-    const { source, department } = taskRow;
+    const { source, department, title } = taskRow;
     const jiraUsername = getJiraUsername(telegramUsername, source);
 
     if (!jiraUsername) {
@@ -553,9 +558,14 @@ bot.callbackQuery(/^(take_task|comment_task|complete_task):(.*)$/, async (ctx) =
         await ctx.answerCallbackQuery();
 
         if (success) {
-            // Редактируем исходное сообщение
+            // Редактируем исходное сообщение, добавляя название задачи и кнопку перехода
+            const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
+            const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
             try {
-                await ctx.editMessageText(`${department}\n\nВзял в работу: ${realName}`);
+                await ctx.editMessageText(
+                    `${department}\n\nВзял в работу: ${realName}\n\nНазвание задачи: ${title}`,
+                    { reply_markup: keyboard }
+                );
             } catch (e) {
                 console.error('editMessageText(take_task) error:', e);
             }
@@ -572,9 +582,14 @@ bot.callbackQuery(/^(take_task|comment_task|complete_task):(.*)$/, async (ctx) =
         await ctx.answerCallbackQuery();
 
         if (success) {
-            // Редактируем исходное сообщение
+            // Редактируем исходное сообщение, добавляя название задачи и кнопку перехода
+            const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
+            const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
             try {
-                await ctx.editMessageText(`${department}\n\nЗавершил задачу: ${realName}`);
+                await ctx.editMessageText(
+                    `${department}\n\nЗавершил задачу: ${realName}\n\nНазвание задачи: ${title}`,
+                    { reply_markup: keyboard }
+                );
             } catch (e) {
                 console.error('editMessageText(complete_task) error:', e);
             }
@@ -709,7 +724,7 @@ async function checkNewCommentsInDoneTasks() {
             }
 
             for (const task of tasks) {
-                const { id, source } = task;
+                const { id, source, title } = task;
 
                 const tableCommentInfo = await new Promise((resolve, reject) => {
                     db.get('SELECT * FROM task_comments WHERE taskId = ?', [id], (err2, row) => {
@@ -756,6 +771,7 @@ async function checkNewCommentsInDoneTasks() {
 
 Автор комментария: ${authorName}
 Комментарий: ${bodyText}
+Ссылка на задачу: https://jira.${source}.team/browse/${task.id}
                         `.trim();
 
                         // Отправляем в admin чат
@@ -877,21 +893,26 @@ async function commentConversation(conversation, ctx) {
         return;
     }
 
-    // Редактируем исходное сообщение
+    // Редактируем исходное сообщение, добавляя название задачи и кнопку перехода
     const callbackMsg = ctx.callbackQuery?.message;
     if (callbackMsg) {
+        const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
+        const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
         try {
             await bot.api.editMessageText(
                 callbackMsg.chat.id,
                 callbackMsg.message_id,
-                `${taskRow.department}\n\nКомментарий добавлен: ${realName}`
+                `${taskRow.department}\n\nКомментарий добавлен: ${realName}\n\nНазвание задачи: ${taskRow.title}`,
+                { reply_markup: keyboard }
             );
         } catch (e) {
             console.error('editMessageText (comment) error:', e);
         }
     } else {
         // Если не удалось найти сообщение для редактирования
-        await ctx.reply(`${taskRow.department}\n\nКомментарий добавлен: ${realName}`);
+        const jiraUrl = `https://jira.${source}.team/browse/${taskId}`;
+        const keyboard = new InlineKeyboard().url('Перейти к задаче', jiraUrl);
+        await ctx.reply(`${taskRow.department}\n\nКомментарий добавлен: ${realName}\n\nНазвание задачи: ${taskRow.title}`, { reply_markup: keyboard });
     }
 }
 
