@@ -18,7 +18,7 @@ console.log('Bot is starting...');
 bot.use(session({ initial: () => ({}) }));
 bot.use(conversations());
 
-// Настройка Bottleneck
+// Настройка Bottleneck для управления лимитами Telegram API
 const limiter = new Bottleneck({
     maxConcurrent: 1, // Максимальное количество одновременных задач
     minTime: 1000 // Минимальное время между задачами в миллисекундах (1 секунда)
@@ -45,7 +45,7 @@ db.serialize(() => {
             resolution TEXT,
             assignee TEXT,
             dateAdded DATETIME,
-            lastSent DATETIME,
+            lastSentDate DATETIME, -- Поле для отслеживания последней отправки
             source TEXT,
             archived INTEGER DEFAULT 0,
             archivedDate DATETIME
@@ -72,7 +72,7 @@ db.serialize(() => {
     `);
 });
 
-// Карта пользователей: Telegram ник -> ФИО и Jira логины.
+// Карта пользователей: Telegram ник -> ФИО и Jira логины для разных источников
 const userMappings = {
     lipchinski: {
         name: "Дмитрий Селиванов",
@@ -252,7 +252,8 @@ async function fetchAndStoreTasksFromJira(source, url, pat) {
                          resolution = ?,
                          assignee = ?,
                          source = ?,
-                         archived = 0 -- Снимаем флаг архивирования
+                         archived = 0, -- Снимаем флаг архивирования
+                         archivedDate = NULL
                      WHERE id = ?`,
                     [
                         taskData.title,
@@ -269,7 +270,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat) {
                 // Вставляем новую задачу
                 db.run(
                     `INSERT INTO tasks
-                     (id, title, priority, issueType, department, resolution, assignee, dateAdded, lastSent, source, archived, archivedDate)
+                     (id, title, priority, issueType, department, resolution, assignee, dateAdded, lastSentDate, source, archived, archivedDate)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, NULL)`,
                     [
                         taskData.id,
@@ -327,25 +328,29 @@ async function fetchAndStoreTasksFromJira(source, url, pat) {
                 }
             );
         }
-    } catch (error) {
-        console.error(`Error fetching and storing tasks from ${source} Jira:`, error);
     }
-}
 
 /**
  * Функция отправки задач в Telegram канал.
  * @param {string} chatId - ID чата (канала), куда отправлять задачи.
+ * @param {boolean} isStartup - Флаг, указывающий, выполняется ли отправка при запуске бота.
  */
-async function sendJiraTasksToChat(chatId) {
-    const today = getMoscowTimestamp().split(' ')[0];
+async function sendJiraTasksToChat(chatId, isStartup = false) {
+    const today = DateTime.now().setZone('Europe/Moscow').toFormat('yyyy-MM-dd');
+
+    // Выбираем задачи, которые не архивированы, соответствуют департаменту и типу,
+    // и либо никогда не отправлялись, либо отправлялись раньше сегодня (для отправки только сегодня)
     const query = `
         SELECT *
         FROM tasks
         WHERE archived = 0
-          AND department = 'Техническая поддержка'
-          AND issueType IN ('Infra', 'Office', 'Prod')
-          AND (lastSent IS NULL OR lastSent < date('${today}'))
-          AND dateAdded >= date('now', '-30 days') -- Исключаем задачи старше 30 дней
+          AND (
+                department = 'Техническая поддержка'
+                OR issueType IN ('Infra', 'Office', 'Prod')
+              )
+          AND (lastSentDate IS NULL OR lastSentDate < date('${today}'))
+          AND date(dateAdded) >= date('now', '-30 days') -- Исключаем задачи старше 30 дней
+          AND date(dateAdded) = date('${today}') -- Отправляем только сегодняшние задачи
     `;
 
     db.all(query, [], async (err, rows) => {
@@ -376,11 +381,11 @@ async function sendJiraTasksToChat(chatId) {
 Департамент: ${task.department}
             `.trim();
 
-            // Обернуть отправку сообщения в Bottleneck
+            // Отправляем сообщение через Bottleneck
             limiter.schedule(() => sendMessageWithRetry(chatId, messageText, { reply_markup: keyboard }))
                 .then(() => {
-                    // Обновляем поле lastSent после успешной отправки
-                    db.run('UPDATE tasks SET lastSent = ? WHERE id = ?', [getMoscowTimestamp(), task.id]);
+                    // Обновляем поле lastSentDate после успешной отправки
+                    db.run('UPDATE tasks SET lastSentDate = ? WHERE id = ?', [getMoscowTimestamp(), task.id]);
                 })
                 .catch((error) => {
                     console.error('Failed to send message after retries:', error);
@@ -390,7 +395,117 @@ async function sendJiraTasksToChat(chatId) {
 }
 
 /**
- * Отправляет сообщение с обработкой ошибок 429 и повторными попытками.
+ * Функция отправки задач в Telegram чат при выполнении критериев.
+ * @param {string} chatId - ID чата.
+ */
+async function sendTasksIfNeeded(chatId) {
+    const today = DateTime.now().setZone('Europe/Moscow').toFormat('yyyy-MM-dd');
+
+    // Запрос для Технической поддержки: раз в сутки
+    const tsQuery = `
+        SELECT *
+        FROM tasks
+        WHERE archived = 0
+          AND department = 'Техническая поддержка'
+          AND issueType IN ('Infra', 'Office', 'Prod')
+          AND (lastSentDate IS NULL OR date(lastSentDate) < date('${today}'))
+          AND date(dateAdded) <= date('${today}')
+    `;
+
+    db.all(tsQuery, [], async (err, tsTasks) => {
+        if (err) {
+            console.error('sendTasksIfNeeded (Technical Support) error:', err);
+            return;
+        }
+
+        for (const task of tsTasks) {
+            const keyboard = new InlineKeyboard();
+            const jiraUrl = `https://jira.${task.source}.team/browse/${task.id}`;
+
+            // Создаём кнопки
+            keyboard
+                .text('Взять в работу', `take_task:${task.id}`)
+                .text('Комментарий', `comment_task:${task.id}`)
+                .text('Завершить', `complete_task:${task.id}`)
+                .row()
+                .url('Перейти к задаче', jiraUrl);
+
+            const messageText = `
+Задача: ${task.id}
+Источник: ${task.source}
+Описание: ${task.title}
+Приоритет: ${getPriorityEmoji(task.priority)}
+Тип задачи: ${task.issueType}
+Исполнитель: ${task.assignee || 'не назначен'}
+Департамент: ${task.department}
+            `.trim();
+
+            // Отправляем сообщение через Bottleneck
+            limiter.schedule(() => sendMessageWithRetry(chatId, messageText, { reply_markup: keyboard }))
+                .then(() => {
+                    // Обновляем поле lastSentDate после успешной отправки
+                    db.run('UPDATE tasks SET lastSentDate = ? WHERE id = ?', [getMoscowTimestamp(), task.id]);
+                })
+                .catch((error) => {
+                    console.error('Failed to send message after retries (Technical Support):', error);
+                });
+        }
+    });
+
+    // Запрос для остальных департаментов: раз в три дня
+    const otherQuery = `
+        SELECT *
+        FROM tasks
+        WHERE archived = 0
+          AND department != 'Техническая поддержка'
+          AND issueType IN ('Infra', 'Office', 'Prod')
+          AND (lastSentDate IS NULL OR date(lastSentDate) <= date('${today}', '-3 days'))
+          AND date(dateAdded) <= date('${today}')
+    `;
+
+    db.all(otherQuery, [], async (err, otherTasks) => {
+        if (err) {
+            console.error('sendTasksIfNeeded (Other Departments) error:', err);
+            return;
+        }
+
+        for (const task of otherTasks) {
+            const keyboard = new InlineKeyboard();
+            const jiraUrl = `https://jira.${task.source}.team/browse/${task.id}`;
+
+            // Создаём кнопки
+            keyboard
+                .text('Взять в работу', `take_task:${task.id}`)
+                .text('Комментарий', `comment_task:${task.id}`)
+                .text('Завершить', `complete_task:${task.id}`)
+                .row()
+                .url('Перейти к задаче', jiraUrl);
+
+            const messageText = `
+Задача: ${task.id}
+Источник: ${task.source}
+Описание: ${task.title}
+Приоритет: ${getPriorityEmoji(task.priority)}
+Тип задачи: ${task.issueType}
+Исполнитель: ${task.assignee || 'не назначен'}
+Департамент: ${task.department}
+            `.trim();
+
+            // Отправляем сообщение через Bottleneck
+            limiter.schedule(() => sendMessageWithRetry(chatId, messageText, { reply_markup: keyboard }))
+                .then(() => {
+                    // Обновляем поле lastSentDate после успешной отправки
+                    db.run('UPDATE tasks SET lastSentDate = ? WHERE id = ?', [getMoscowTimestamp(), task.id]);
+                })
+                .catch((error) => {
+                    console.error('Failed to send message after retries (Other Departments):', error);
+                });
+        }
+    });
+}
+
+/**
+ * Функция отправки сообщений с обработкой ошибок 429 и повторными попытками.
  * @param {number|string} chatId - ID чата.
  * @param {string} text - Текст сообщения.
  * @param {object} options - Дополнительные опции (например, reply_markup).
@@ -583,7 +698,7 @@ bot.callbackQuery(/^(take_task|comment_task|complete_task):(.*)$/, async (ctx) =
         return;
     }
 
-    const { source, department, title } = taskRow;
+    const { source, department, title, archived } = taskRow;
     const jiraUsername = getJiraUsername(telegramUsername, source);
 
     if (!jiraUsername) {
@@ -640,56 +755,81 @@ bot.callbackQuery(/^(take_task|comment_task|complete_task):(.*)$/, async (ctx) =
 });
 
 /**
- * Команда /report — выводит статистику по выполненным задачам за последние 30 дней.
+ * Обработчик channel_post для команд, отправленных в канал.
  */
-bot.command('report', async (ctx) => {
-    try {
-        const thirtyDaysAgo = DateTime.now().setZone('Europe/Moscow')
-            .minus({ days: 30 })
-            .toFormat('yyyy-MM-dd');
+bot.on('channel_post', async (ctx) => {
+    const text = ctx.channelPost.text;
+    const chatId = ctx.channelPost.chat.id;
+    console.log(`Received channel_post from chat ID ${chatId}: ${text}`);
 
-        const query = `
-            SELECT assignee
-            FROM tasks
-            WHERE resolution = 'Done'
-              AND department = 'Техническая поддержка'
-              AND date(dateAdded) >= date(?)
-        `;
+    if (text && text.startsWith('/start')) {
+        console.log('Processing /start command in channel');
+        await ctx.reply(
+            'Привет! Я бот, который будет сообщать о новых задачах.\n' +
+            'Используй /report для отчёта по выполненным задачам.'
+        );
 
-        db.all(query, [thirtyDaysAgo], async (err, rows) => {
-            if (err) {
-                console.error('/report error:', err);
-                await ctx.reply('Произошла ошибка при формировании отчёта.');
-                return;
-            }
-
-            if (!rows || rows.length === 0) {
-                await ctx.reply('За последние 30 дней нет выполненных задач в Техподдержке.');
-                return;
-            }
-
-            const stats = {};
-            for (const row of rows) {
-                const name = row.assignee || 'Неизвестный';
-                if (!stats[name]) stats[name] = 0;
-                stats[name]++;
-            }
-
-            let reportMessage = 'Отчёт по выполненным задачам (Техподдержка) за последние 30 дней:\n\n';
-            for (const name of Object.keys(stats)) {
-                reportMessage += `${name}: ${stats[name]} задач(и)\n`;
-            }
-
-            await ctx.reply(reportMessage);
-        });
-    } catch (error) {
-        console.error('Error in /report command:', error);
-        await ctx.reply('Произошла ошибка при формировании отчёта.');
+        await fetchAndStoreJiraTasks();
+        await sendJiraTasksToChat(chatId, true);
     }
 });
 
 /**
- * Ежедневная очистка старых задач и связанных данных.
+ * Глобальный обработчик ошибок.
+ */
+bot.catch(async (err, ctx) => {
+    if (ctx && ctx.update && ctx.update.update_id) {
+        console.error(`Error while handling update ${ctx.update.update_id}:`, err);
+    } else {
+        console.error('Error while handling update:', err);
+    }
+
+    // Проверяем, можно ли отправить сообщение об ошибке
+    if (ctx && ctx.replyable) {
+        try {
+            await ctx.reply('Произошла ошибка при обработке вашего запроса.');
+        } catch (e) {
+            console.error('Error sending error message:', e);
+        }
+    }
+});
+
+/**
+ * Утренние и ночные уведомления.
+ */
+cron.schedule('0 21 * * *', async () => {
+    if (process.env.ADMIN_CHAT_ID) {
+        await limiter.schedule(() => sendMessageWithRetry(process.env.ADMIN_CHAT_ID, 'Доброй ночи! Заполни тикет передачи смены.'));
+    } else {
+        console.error('ADMIN_CHAT_ID is not set in .env');
+    }
+});
+cron.schedule('0 9 * * *', async () => {
+    if (process.env.ADMIN_CHAT_ID) {
+        await limiter.schedule(() => sendMessageWithRetry(process.env.ADMIN_CHAT_ID, 'Доброе утро! Проверь задачи на сегодня и начни смену.'));
+    } else {
+        console.error('ADMIN_CHAT_ID is not set in .env');
+    }
+});
+
+/**
+ * Проверка новых комментариев в завершенных задачах (Done) каждые 5 минут.
+ */
+cron.schedule('*/5 * * * *', async () => {
+    console.log('Checking new comments in done tasks...');
+    await checkNewCommentsInDoneTasks();
+});
+
+/**
+ * Проверка новых комментариев в архивированных задачах каждые 5 минут.
+ */
+cron.schedule('*/5 * * * *', async () => {
+    console.log('Checking new comments in archived tasks...');
+    await checkNewCommentsInArchivedTasks();
+});
+
+/**
+ * Ежедневная очистка старых архивированных задач и связанных данных.
  */
 cron.schedule('0 0 * * *', () => {
     console.log('Starting daily DB cleanup...');
@@ -734,197 +874,6 @@ cron.schedule('0 0 * * *', () => {
             console.log(`Cleaned up ${this.changes} old task_comments.`);
         }
     });
-});
-
-/**
- * Проверка новых комментариев в закрытых задачах (Done) в Техподдержке каждые 5 минут.
- */
-cron.schedule('*/5 * * * *', async () => {
-    console.log('Checking new comments in done tasks...');
-    await checkNewCommentsInDoneTasks();
-});
-
-/**
- * Функция проверки новых комментариев.
- */
-async function checkNewCommentsInDoneTasks() {
-    try {
-        const query = `
-            SELECT *
-            FROM tasks
-            WHERE department = 'Техническая поддержка'
-              AND resolution = 'Done'
-              AND archived = 0
-              AND dateAdded >= date('now', '-30 days') -- Исключаем старые задачи
-        `;
-
-        db.all(query, [], async (err, tasks) => {
-            if (err) {
-                console.error('Error fetching done tasks for comments check:', err);
-                return;
-            }
-
-            for (const task of tasks) {
-                const { id, source, title } = task;
-
-                const tableCommentInfo = await new Promise((resolve, reject) => {
-                    db.get('SELECT * FROM task_comments WHERE taskId = ?', [id], (err2, row) => {
-                        if (err2) reject(err2);
-                        else resolve(row);
-                    });
-                });
-
-                const lastSavedCommentId = tableCommentInfo ? tableCommentInfo.lastCommentId : null;
-
-                // Запрашиваем комментарии из Jira
-                const commentUrl = `https://jira.${source}.team/rest/api/2/issue/${id}/comment`;
-                const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
-
-                const response = await axios.get(commentUrl, {
-                    headers: {
-                        'Authorization': `Bearer ${pat}`,
-                        'Accept': 'application/json'
-                    }
-                });
-
-                const allComments = response.data.comments || [];
-                // Сортируем по ID (предполагаем, что ID числовой)
-                allComments.sort((a, b) => parseInt(a.id) - parseInt(b.id));
-
-                let newLastId = lastSavedCommentId;
-                for (const comment of allComments) {
-                    const commentIdNum = parseInt(comment.id);
-                    const lastSavedIdNum = lastSavedCommentId ? parseInt(lastSavedCommentId) : 0;
-
-                    if (commentIdNum > lastSavedIdNum) {
-                        // Новый комментарий
-                        const authorName = comment.author?.displayName || 'Неизвестный автор';
-                        const bodyText = comment.body || '';
-
-                        const messageText = `
-В выполненную задачу добавлен новый комментарий
-
-Задача: ${task.id}
-Источник: ${task.source}
-Описание: ${task.title}
-Приоритет: ${getPriorityEmoji(task.priority)}
-Тип задачи: ${task.issueType}
-
-Автор комментария: ${authorName}
-Комментарий: ${bodyText}
-Ссылка на задачу: https://jira.${source}.team/browse/${task.id}
-                        `.trim();
-
-                        // Отправляем в admin чат
-                        if (process.env.ADMIN_CHAT_ID) {
-                            await limiter.schedule(() => sendMessageWithRetry(process.env.ADMIN_CHAT_ID, messageText));
-                        } else {
-                            console.error('ADMIN_CHAT_ID is not set in .env');
-                        }
-
-                        // Обновляем lastCommentId
-                        if (!newLastId || commentIdNum > parseInt(newLastId)) {
-                            newLastId = comment.id;
-                        }
-                    }
-                }
-
-                // Обновляем или вставляем запись о последнем комментарии
-                if (newLastId && newLastId !== lastSavedCommentId) {
-                    if (tableCommentInfo) {
-                        db.run(
-                            `UPDATE task_comments
-                             SET lastCommentId = ?, timestamp = ?
-                             WHERE taskId = ?`,
-                            [newLastId, getMoscowTimestamp(), id]
-                        );
-                    } else {
-                        db.run(
-                            `INSERT INTO task_comments (taskId, lastCommentId, timestamp)
-                             VALUES (?, ?, ?)`,
-                            [id, newLastId, getMoscowTimestamp()]
-                        );
-                    }
-                }
-            }
-        });
-    } catch (error) {
-        console.error('checkNewCommentsInDoneTasks error:', error);
-    }
-}
-
-/**
- * Обработчик channel_post для команд, отправленных в канал.
- */
-bot.on('channel_post', async (ctx) => {
-    const text = ctx.channelPost.text;
-    const chatId = ctx.channelPost.chat.id;
-    console.log(`Received channel_post from chat ID ${chatId}: ${text}`);
-
-    if (text && text.startsWith('/start')) {
-        console.log('Processing /start command in channel');
-        await ctx.reply(
-            'Привет! Я бот, который будет сообщать о новых задачах.\n' +
-            'Используй /report для отчёта по выполненным задачам.'
-        );
-
-        await fetchAndStoreJiraTasks();
-        await sendJiraTasksToChat(chatId);
-    }
-});
-
-/**
- * Обработчик команды /start для личных чатов и групп.
- */
-bot.command('start', async (ctx) => {
-    console.log('Received /start command from:', ctx.from?.username);
-    await ctx.reply(
-        'Привет! Я буду сообщать о новых задачах.\n' +
-        'Используй /report для отчёта по выполненным задачам.'
-    );
-    await fetchAndStoreJiraTasks();
-    await sendJiraTasksToChat(process.env.ADMIN_CHAT_ID);
-
-    // Обратите внимание: Планировщики cron уже определены глобально,
-    // поэтому не нужно их запускать здесь снова.
-});
-
-/**
- * Глобальный обработчик ошибок.
- */
-bot.catch(async (err, ctx) => {
-    if (ctx && ctx.update && ctx.update.update_id) {
-        console.error(`Error while handling update ${ctx.update.update_id}:`, err);
-    } else {
-        console.error('Error while handling update:', err);
-    }
-
-    // Проверяем, можно ли отправить сообщение об ошибке
-    if (ctx && ctx.replyable) {
-        try {
-            await ctx.reply('Произошла ошибка при обработке вашего запроса.');
-        } catch (e) {
-            console.error('Error sending error message:', e);
-        }
-    }
-});
-
-/**
- * Утренние и ночные уведомления.
- */
-cron.schedule('0 21 * * *', async () => {
-    if (process.env.ADMIN_CHAT_ID) {
-        await limiter.schedule(() => sendMessageWithRetry(process.env.ADMIN_CHAT_ID, 'Доброй ночи! Заполни тикет передачи смены.'));
-    } else {
-        console.error('ADMIN_CHAT_ID is not set in .env');
-    }
-});
-cron.schedule('0 9 * * *', async () => {
-    if (process.env.ADMIN_CHAT_ID) {
-        await limiter.schedule(() => sendMessageWithRetry(process.env.ADMIN_CHAT_ID, 'Доброе утро! Проверь задачи на сегодня и начни смену.'));
-    } else {
-        console.error('ADMIN_CHAT_ID is not set in .env');
-    }
 });
 
 /**
