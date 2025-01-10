@@ -296,6 +296,12 @@ cron.schedule('*/5 * * * *', () => {
     checkForNewComments();
 });
 
+
+let interval = null;
+let nightShiftCron = null;
+let morningShiftCron = null;
+
+
 // Команда /start для запуска бота
 bot.command('start', async (ctx) => {
     await ctx.reply('Привет! Каждую минуту я буду проверять новые задачи...');
