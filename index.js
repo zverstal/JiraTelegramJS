@@ -213,7 +213,7 @@ async function sendJiraTasks(ctx) {
 
 async function checkForNewComments() {
     try {
-        const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND status in (Done, Awaiting, "Awaiting implementation") AND updated >= -30d`;
+        const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND status in (Done, Awaiting, "Awaiting implementation") AND updated >= -2d`;
         const sources = ['sxl', 'betone'];
 
         for (const source of sources) {
@@ -304,41 +304,6 @@ async function checkForNewComments() {
 cron.schedule('*/5 * * * *', () => {
     console.log('Checking for new comments...');
     checkForNewComments();
-});
-
-bot.command('report', async (ctx) => {
-    const query = `
-        SELECT LOWER(assignee) AS normalizedAssignee, COUNT(taskId) AS taskCount
-        FROM task_comments
-        WHERE assignee IS NOT NULL
-        GROUP BY normalizedAssignee
-        ORDER BY taskCount DESC
-    `;
-
-    db.all(query, [], (err, rows) => {
-        if (err) {
-            console.error('Error generating report:', err);
-            ctx.reply('Произошла ошибка при генерации отчета.');
-            return;
-        }
-
-        if (rows.length === 0) {
-            ctx.reply('Нет данных для формирования отчета.');
-            return;
-        }
-
-        let reportText = 'Отчет по завершенным задачам за 30 дней:\n\n';
-        rows.forEach((row) => {
-            const displayName = row.normalizedAssignee || 'Не указан';
-            const formattedName = displayName
-                .split(' ')
-                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-                .join(' '); // Преобразуем имя в нормальный формат
-            reportText += `Исполнитель: ${formattedName}, Количество: ${row.taskCount}\n`;
-        });
-
-        ctx.reply(reportText);
-    });
 });
 
 
