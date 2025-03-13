@@ -593,10 +593,6 @@ async function fetchDutyEngineer() {
     }
   }
   
-  module.exports = { fetchDutyEngineer };
-
-
-  const { fetchDutyEngineer } = require('./fetchDutyEngineer');
 
 // Пример команды /duty
 bot.command('duty', async (ctx) => {
