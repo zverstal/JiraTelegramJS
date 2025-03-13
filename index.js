@@ -7,7 +7,7 @@ const cron = require('node-cron');
 const Bottleneck = require('bottleneck');
 
 // Подключение к Confluence
-const { Confluence } = require('confluence-api');
+const Confluence = require('confluence-api');  // без фигурных скобок
 
 // Создаем экземпляр бота
 const bot = new Bot(process.env.BOT_API_KEY);
@@ -16,9 +16,9 @@ const db = new sqlite3.Database('tasks.db');
 
 // Confluence API настройки (убедитесь, что у вас в .env правильные переменные)
 const confluence = new Confluence({
-    username: process.env.CONFLUENCE_USERNAME,      // Учетка пользователя Confluence
-    password: process.env.CONFLUENCE_API_TOKEN,     // Токен доступа (API Token)
-    baseUrl: 'https://wiki.sxl.team'                // Базовый URL
+    username: process.env.CONFLUENCE_USERNAME,
+    password: process.env.CONFLUENCE_API_TOKEN,
+    baseUrl: 'https://wiki.sxl.team'
 });
 
 // Функция для получения текущего времени Москвы в формате 'yyyy-MM-dd HH:mm:ss'
