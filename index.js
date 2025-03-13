@@ -6,20 +6,25 @@ const { DateTime } = require('luxon');
 const cron = require('node-cron');
 const Bottleneck = require('bottleneck');
 
-// Подключение к Confluence
-const Confluence = require('confluence-api');  // без фигурных скобок
 
 // Создаем экземпляр бота
 const bot = new Bot(process.env.BOT_API_KEY);
 // Создаем базу данных
 const db = new sqlite3.Database('tasks.db');
 
-// Confluence API настройки (убедитесь, что у вас в .env правильные переменные)
-const confluence = new Confluence({
-    username: process.env.CONFLUENCE_USERNAME,
-    password: process.env.CONFLUENCE_API_TOKEN,
-    baseUrl: 'https://wiki.sxl.team'
-});
+const confluence = {
+    getContentById(pageId, callback) {
+      axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}`, {
+        headers: {
+          // Важно: Bearer и ваш токен
+          'Authorization': `Bearer ${process.env.CONFLUENCE_API_TOKEN}`,
+          'Accept': 'application/json'
+        }
+      })
+      .then(response => callback(null, response.data))
+      .catch(err => callback(err));
+    }
+  };
 
 // Функция для получения текущего времени Москвы в формате 'yyyy-MM-dd HH:mm:ss'
 function getMoscowTimestamp() {
@@ -526,94 +531,93 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // Без промисов: вся логика парсинга — внутри колбэка.
 // fetchDutyEngineer принимает колбэк (err, result) => {}
     function fetchDutyEngineer(callback) {
-        // Тут ваш реальный pageId
-        const pageId = '3539406';
+        const pageId = '3539406'; // Ваш реальный pageId
       
-        // Вместо getContentById(...) используем getCustomContentById(...).
-        // Указываем expanders: ['body.view'] — так библиотека вернёт HTML в `data.body.view.value`
-        confluence.getCustomContentById({
-          id: pageId,
-          expanders: ['body.view']
-        }, (err, data) => {
+        // Вызываем наш «мини-клиент»
+        confluence.getContentById(pageId, (err, data) => {
           if (err) {
-            console.error('Ошибка при getCustomContentById:', err);
-            return callback(err); // прокидываем ошибку наружу
+            console.error('Ошибка при запросе Confluence:', err);
+            return callback(err);
           }
       
-          // Проверим, есть ли нужные поля
-          if (!data || !data.body || !data.body.view) {
-            console.log('В ответе нет поля body.view. Возможно, нет доступа или страница пуста.');
-            return callback(null, 'Не найдено');
-          }
-      
-          // Содержимое HTML
-          const html = data.body.view.value;
-      
-          // Пример парсинга HTML (ищем строки в таблице)
-          const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
-          const schedule = [];
-          let match;
-      
-          while ((match = rowRegex.exec(html)) !== null) {
-            schedule.push({
-              index: match[1],
-              range: match[2], // типа "06.01-12.01"
-              name: match[3].trim()
-            });
-          }
-      
-          if (schedule.length === 0) {
-            console.log('Не удалось извлечь расписание дежурств из HTML.');
-            return callback(null, 'Не найдено');
-          }
-      
-          // Проверим, попадает ли сегодняшняя дата в один из интервалов
-          const { DateTime } = require('luxon');
-          const today = DateTime.now().setZone('Europe/Moscow');
-      
-          for (const item of schedule) {
-            const [startStr, endStr] = item.range.split('-'); // '06.01' - '12.01'
-            const [startDay, startMonth] = startStr.split('.');
-            const [endDay, endMonth] = endStr.split('.');
-            const year = 2025; // в вашей таблице указан 2025
-      
-            const startDate = DateTime.fromObject({
-              year,
-              month: Number(startMonth),
-              day: Number(startDay),
-              zone: 'Europe/Moscow'
-            });
-      
-            const endDate = DateTime.fromObject({
-              year,
-              month: Number(endMonth),
-              day: Number(endDay),
-              zone: 'Europe/Moscow'
-            });
-      
-            if (today >= startDate && today <= endDate) {
-              // Если нашли подходящий интервал, возвращаем фамилию дежурного
-              return callback(null, item.name);
+          // Предположим, нам нужно поле data.body.view.value
+          // Для этого нужен параметр ?expand=body.view в URL
+          // Давайте сделаем отдельный запрос, где расширяем поля:
+          // (Можно переписать, чтобы сразу в getContentById использовать expand)
+          axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
+            headers: {
+              'Authorization': `Bearer ${process.env.CONFLUENCE_API_TOKEN}`,
+              'Accept': 'application/json'
             }
-          }
+          })
+          .then(resp => {
+            const html = resp.data?.body?.view?.value;
+            if (!html) {
+              return callback(null, 'Не найдено');
+            }
       
-          // Если ни один интервал не подошел
-          callback(null, 'Не найдено');
+            // Парсим HTML, ищем строки <tr><td>1</td><td>06.01-12.01</td><td>Белогур</td></tr> ...
+            const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
+            let match;
+            const schedule = [];
+      
+            while ((match = rowRegex.exec(html)) !== null) {
+              schedule.push({
+                index: match[1],
+                range: match[2],     // «06.01-12.01»
+                name: match[3].trim()
+              });
+            }
+      
+            if (schedule.length === 0) {
+              return callback(null, 'Не найдено');
+            }
+      
+            // Сравниваем сегодняшнюю дату с интервалом
+            const today = DateTime.now().setZone('Europe/Moscow');
+            for (const item of schedule) {
+              const [startStr, endStr] = item.range.split('-');
+              const [startDay, startMonth] = startStr.split('.');
+              const [endDay, endMonth] = endStr.split('.');
+              const year = 2025;
+      
+              const startDate = DateTime.fromObject({
+                year,
+                month: Number(startMonth),
+                day: Number(startDay),
+                zone: 'Europe/Moscow'
+              });
+              const endDate = DateTime.fromObject({
+                year,
+                month: Number(endMonth),
+                day: Number(endDay),
+                zone: 'Europe/Moscow'
+              });
+      
+              if (today >= startDate && today <= endDate) {
+                return callback(null, item.name);
+              }
+            }
+      
+            callback(null, 'Не найдено');
+          })
+          .catch(e => {
+            console.error('Ошибка при запросе body.view:', e);
+            return callback(e);
+          });
         });
       }
       
-      // Пример использования в боте, колбэком:
+      // Пример использования: команда /duty
       bot.command('duty', (ctx) => {
         fetchDutyEngineer((err, engineer) => {
           if (err) {
-            console.error('Ошибка fetchDutyEngineer:', err);
-            ctx.reply('Произошла ошибка при запросе дежурного.');
+            ctx.reply('Ошибка при получении дежурного.');
             return;
           }
           ctx.reply(`Дежурный: ${engineer}`);
         });
       });
-
 
 //---------------------------------------------------------------------
 // Расписание ночной и утренней смены
