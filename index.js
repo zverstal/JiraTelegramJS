@@ -522,96 +522,98 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 //---------------------------------------------------------------------
 // Допустим, что ID или пространство страницы - условное (надо уточнить реальный)
 // Функция извлекает дежурного специалиста, сверяя сегодняшнюю дату и диапазон
-// 1) Помощник: оборачивает confluence.getContentById(...) в Promise
-function getContentByIdPromise(pageId, expandKey) {
-    return new Promise((resolve, reject) => {
-      // Подаём объект { expand: expandKey } 
-      confluence.getContentById(pageId, { expand: expandKey }, (err, data) => {
-        if (err) {
-          console.error('Ошибка getContentById:', err);
-          return reject(err);
-        }
-        // Выводим всё, что вернул Confluence. Посмотрите в логи, что там.
-        console.log('Confluence getContentById data:', JSON.stringify(data, null, 2));
-        resolve(data);
-      });
-    });
-  }
-  
-  async function fetchDutyEngineer() {
-    try {
-      const pageId = '3539406';
-      // Сперва попробуйте 'body.view'. Если не сработает – возможно, нужно 'body.storage'
-      const response = await getContentByIdPromise(pageId, 'body.view');
-  
-      // Посмотрите, что реально есть в response.body
-      console.log('Response body:', JSON.stringify(response.body, null, 2));
-  
-      // Попробуйте обращаться к response.body.view.value
-      const html = response.body?.view?.value;
-      if (!html) {
-        console.log('Не обнаружено поле response.body.view.value');
-        return 'Не найдено';
-      }
-  
-      // Здесь парсим html
-      const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
-      let match;
-      const schedule = [];
-  
-      while ((match = rowRegex.exec(html)) !== null) {
-        schedule.push({
-          index: match[1],
-          range: match[2],
-          name: match[3].trim()
-        });
-      }
-  
-      if (schedule.length === 0) {
-        console.log('Не удалось извлечь расписание дежурств из HTML.');
-        return 'Не найдено';
-      }
-  
-      // Проверяем, попадает ли сегодняшняя дата в один из интервалов
-      const today = DateTime.now().setZone('Europe/Moscow');
-      for (const item of schedule) {
-        const [startStr, endStr] = item.range.split('-');
-        const [startDay, startMonth] = startStr.split('.');
-        const [endDay, endMonth] = endStr.split('.');
-        const year = 2025;
-  
-        const startDate = DateTime.fromObject({
-          year,
-          month: Number(startMonth),
-          day: Number(startDay),
-          zone: 'Europe/Moscow'
-        });
-        const endDate = DateTime.fromObject({
-          year,
-          month: Number(endMonth),
-          day: Number(endDay),
-          zone: 'Europe/Moscow'
-        });
-  
-        if (today >= startDate && today <= endDate) {
-          return item.name;
-        }
-      }
-  
-      return 'Не найдено';
-    } catch (error) {
-      console.error('Ошибка получения данных из Confluence:', error);
-      return 'Ошибка при запросе';
-    }
-  }
 
-//---------------------------------------------------------------------
-// Команда /duty для вывода текущего дежурного
-//---------------------------------------------------------------------
-bot.command('duty', async (ctx) => {
-    const engineer = await fetchDutyEngineer(); // теперь работает!
-    await ctx.reply(`Дежурный: ${engineer}`);
-  });
+// Без промисов: вся логика парсинга — внутри колбэка.
+// fetchDutyEngineer принимает колбэк (err, result) => {}
+    function fetchDutyEngineer(callback) {
+        // Ваш реальный pageId
+        const pageId = '3539406';
+      
+        // Вызываем getContentById С ТРЕМЯ АРГУМЕНТАМИ:
+        // 1) pageId
+        // 2) объект { expand: 'body.view' }
+        // 3) колбэк (err, data)
+        confluence.getContentById(pageId, { expand: 'body.view' }, (err, data) => {
+          if (err) {
+            console.error('Ошибка при getContentById:', err);
+            // Передаём ошибку колбэку
+            return callback(err);
+          }
+      
+          // Проверяем, есть ли body.view
+          if (!data || !data.body || !data.body.view) {
+            console.log('В ответе нет поля body.view - нет доступа или неверный expand.');
+            return callback(null, 'Не найдено');
+          }
+      
+          // Вот сам HTML:
+          const html = data.body.view.value;
+      
+          // Парсим HTML (ищем строки вида <tr><td>1</td><td>06.01-12.01</td><td>Белогур</td></tr>)
+          const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
+          const schedule = [];
+          let match;
+      
+          while ((match = rowRegex.exec(html)) !== null) {
+            schedule.push({
+              index: match[1],
+              range: match[2],
+              name: match[3].trim()
+            });
+          }
+      
+          if (schedule.length === 0) {
+            console.log('Не удалось извлечь расписание дежурств из HTML.');
+            return callback(null, 'Не найдено');
+          }
+      
+          // Определяем, попадает ли сегодняшняя дата в один из интервалов
+          const { DateTime } = require('luxon');
+          const today = DateTime.now().setZone('Europe/Moscow');
+      
+          for (const item of schedule) {
+            const [startStr, endStr] = item.range.split('-');
+            const [startDay, startMonth] = startStr.split('.');
+            const [endDay, endMonth] = endStr.split('.');
+            const year = 2025; // Указан в таблице
+      
+            const startDate = DateTime.fromObject({
+              year,
+              month: Number(startMonth),
+              day: Number(startDay),
+              zone: 'Europe/Moscow'
+            });
+      
+            const endDate = DateTime.fromObject({
+              year,
+              month: Number(endMonth),
+              day: Number(endDay),
+              zone: 'Europe/Moscow'
+            });
+      
+            if (today >= startDate && today <= endDate) {
+              // Если нашли интервал, возвращаем фамилию
+              return callback(null, item.name);
+            }
+          }
+      
+          // Если ни один интервал не подошел
+          return callback(null, 'Не найдено');
+        });
+      }
+      
+      // Пример использования fetchDutyEngineer в коде бота (колбэк-стиль):
+      bot.command('duty', (ctx) => {
+        fetchDutyEngineer((err, engineer) => {
+          if (err) {
+            console.error('fetchDutyEngineer error:', err);
+            ctx.reply('Произошла ошибка при запросе дежурного.');
+            return;
+          }
+          ctx.reply(`Дежурный: ${engineer}`);
+        });
+      });
+
 
 //---------------------------------------------------------------------
 // Расписание ночной и утренней смены
