@@ -522,100 +522,96 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 //---------------------------------------------------------------------
 // Допустим, что ID или пространство страницы - условное (надо уточнить реальный)
 // Функция извлекает дежурного специалиста, сверяя сегодняшнюю дату и диапазон
-async function fetchDutyEngineer() {
+// 1) Помощник: оборачивает confluence.getContentById(...) в Promise
+function getContentByIdPromise(pageId, expand) {
+    return new Promise((resolve, reject) => {
+      confluence.getContentById(pageId, expand, (err, data) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(data);
+        }
+      });
+    });
+  }
+  
+  // 2) Основная функция: получает HTML со страницы, парсит расписание и возвращает фамилию дежурного
+  async function fetchDutyEngineer() {
     try {
-        // Найти по реальному ID страницы (если известен)
-        // Либо использовать getContentByPageTitle / search для поиска.
-        // Здесь для примера используем некий pageId:
-        const pageId = '3539406'; // Замените на реальный ID статьи
-
-        // Запрашиваем содержимое статьи в виде HTML
-        const response = await confluence.getContentById(pageId, 'body.export_view');
-        const html = response.body.export_view.value;
-
-        // Находим все строки, совпадающие по шаблону:
-        // Например: "1\t06.01-12.01\tБелогур" и т.д.
-        // Мы хотим извлечь: номер, диапазон, фамилию.
-
-        // Упростим задачу: будем искать все вхождения вида:
-        // weekIndex  range(дд.мм-дд.мм)  name
-        // Предположим, что в HTML таблица обернута в <tr><td>...
-        // Посмотрим на упрощенный регэксп:
-        // /<tr>\s*<td>(\d+)<\/td>\s*<td>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td>([^<]+)<\/td>/g
-
-        // Чтобы упростить, в вашем примере указаны пробелы, но в Confluence HTML может быть иначе.
-        // Заменим на упрощенный вариант поиска.
-
-        const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
-        let match;
-        const schedule = [];
-        while ((match = rowRegex.exec(html)) !== null) {
-            // match[1] => номер (1,2,3...)
-            // match[2] => диапазон дат ("06.01-12.01")
-            // match[3] => фамилия ("Белогур" и т.д.)
-            schedule.push({
-                index: match[1],
-                range: match[2],
-                name: match[3].trim()
-            });
-        }
-
-        if (schedule.length === 0) {
-            console.log('Не удалось извлечь дежурных из HTML.');
-            return 'Не найдено';
-        }
-
-        // Нам нужно определить, какая неделя подходит под сегодняшнюю дату.
-        // Например: "06.01-12.01" => с 06 января по 12 января.
-        // Сравним DateTime.now с этими диапазонами.
-
-        const today = DateTime.now().setZone('Europe/Moscow');
-
-        for (const item of schedule) {
-            const [startStr, endStr] = item.range.split('-'); // ["06.01", "12.01"]
-
-            const [startDay, startMonth] = startStr.split('.');
-            const [endDay, endMonth] = endStr.split('.');
-
-            // year берём текущий (2025), судя по таблице
-            // хотя можно брать today.year, если у вас с каждым годом меняется
-            const year = 2025;
-
-            const startDate = DateTime.fromObject({
-                year,
-                month: Number(startMonth),
-                day: Number(startDay),
-                zone: 'Europe/Moscow'
-            });
-
-            const endDate = DateTime.fromObject({
-                year,
-                month: Number(endMonth),
-                day: Number(endDay),
-                zone: 'Europe/Moscow'
-            });
-
-            // Проверяем, попадает ли today в [startDate, endDate]
-            if (today >= startDate && today <= endDate) {
-                return item.name;
-            }
-        }
-
-        // Если ничего не нашли, вернём 'Не найдено'
+      const pageId = '3539406'; // Замените на ваш реальный pageId
+      // Делаем «промисифицированный» вызов к Confluence
+      const response = await getContentByIdPromise(pageId, 'body.export_view');
+      // Теперь в response то, что библиотека normally передает в колбэк (err, data)
+  
+      const html = response.body.export_view.value;
+  
+      // Далее парсим HTML. Например, ищем строки вида:
+      // <tr><td>1</td><td>06.01-12.01</td><td>Белогур</td></tr>
+      // Можно использовать регулярное выражение:
+      const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
+  
+      let match;
+      const schedule = [];
+  
+      while ((match = rowRegex.exec(html)) !== null) {
+        schedule.push({
+          index: match[1],
+          range: match[2],    // "06.01-12.01"
+          name: match[3].trim() 
+        });
+      }
+  
+      if (schedule.length === 0) {
+        console.log('Не удалось извлечь расписание дежурств из HTML.');
         return 'Не найдено';
+      }
+  
+      // Здесь определяем, к какому диапазону относится текущая дата
+      const { DateTime } = require('luxon');
+      const today = DateTime.now().setZone('Europe/Moscow');
+  
+      for (const item of schedule) {
+        const [startStr, endStr] = item.range.split('-'); // например, "06.01" и "12.01"
+        const [startDay, startMonth] = startStr.split('.');
+        const [endDay, endMonth] = endStr.split('.');
+        const year = 2025; // если в таблице явно указан 2025
+  
+        const startDate = DateTime.fromObject({
+          year,
+          month: Number(startMonth),
+          day: Number(startDay),
+          zone: 'Europe/Moscow'
+        });
+  
+        const endDate = DateTime.fromObject({
+          year,
+          month: Number(endMonth),
+          day: Number(endDay),
+          zone: 'Europe/Moscow'
+        });
+  
+        // Если текущая дата в диапазоне
+        if (today >= startDate && today <= endDate) {
+          return item.name; 
+        }
+      }
+  
+      // Если ничего не подошло
+      return 'Не найдено';
+  
     } catch (error) {
-        console.error('Ошибка получения данных из Confluence:', error);
-        return 'Ошибка при запросе';
+      console.error('Ошибка получения данных из Confluence:', error);
+      return 'Ошибка при запросе';
     }
-}
+  }
 
 //---------------------------------------------------------------------
 // Команда /duty для вывода текущего дежурного
 //---------------------------------------------------------------------
 bot.command('duty', async (ctx) => {
-    const engineer = await fetchDutyEngineer();
-    await ctx.reply(`Дежурный специалист на этой неделе: ${engineer}`);
-});
+    const engineer = await fetchDutyEngineer(); // теперь работает!
+    await ctx.reply(`Дежурный: ${engineer}`);
+  });
 
 //---------------------------------------------------------------------
 // Расписание ночной и утренней смены
