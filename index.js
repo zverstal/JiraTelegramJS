@@ -523,42 +523,47 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // Допустим, что ID или пространство страницы - условное (надо уточнить реальный)
 // Функция извлекает дежурного специалиста, сверяя сегодняшнюю дату и диапазон
 // 1) Помощник: оборачивает confluence.getContentById(...) в Promise
-function getContentByIdPromise(pageId, expandString) {
+function getContentByIdPromise(pageId, expandKey) {
     return new Promise((resolve, reject) => {
-      // Вызов с объектом params как вторым аргументом, а колбэком — третьим
-      confluence.getContentById(pageId, { expand: expandString }, (err, data) => {
+      // Подаём объект { expand: expandKey } 
+      confluence.getContentById(pageId, { expand: expandKey }, (err, data) => {
         if (err) {
-          reject(err);
-        } else {
-          resolve(data);
+          console.error('Ошибка getContentById:', err);
+          return reject(err);
         }
+        // Выводим всё, что вернул Confluence. Посмотрите в логи, что там.
+        console.log('Confluence getContentById data:', JSON.stringify(data, null, 2));
+        resolve(data);
       });
     });
   }
   
-  // 2) Основная функция: получает HTML со страницы, парсит расписание и возвращает фамилию дежурного
   async function fetchDutyEngineer() {
     try {
-      const pageId = '3539406'; // Замените на ваш реальный pageId
-      // Делаем «промисифицированный» вызов к Confluence
+      const pageId = '3539406';
+      // Сперва попробуйте 'body.view'. Если не сработает – возможно, нужно 'body.storage'
       const response = await getContentByIdPromise(pageId, 'body.view');
-      // Теперь в response то, что библиотека normally передает в колбэк (err, data)
   
-      const html = response.body.view.value;
+      // Посмотрите, что реально есть в response.body
+      console.log('Response body:', JSON.stringify(response.body, null, 2));
   
-      // Далее парсим HTML. Например, ищем строки вида:
-      // <tr><td>1</td><td>06.01-12.01</td><td>Белогур</td></tr>
-      // Можно использовать регулярное выражение:
+      // Попробуйте обращаться к response.body.view.value
+      const html = response.body?.view?.value;
+      if (!html) {
+        console.log('Не обнаружено поле response.body.view.value');
+        return 'Не найдено';
+      }
+  
+      // Здесь парсим html
       const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
-  
       let match;
       const schedule = [];
   
       while ((match = rowRegex.exec(html)) !== null) {
         schedule.push({
           index: match[1],
-          range: match[2],    // "06.01-12.01"
-          name: match[3].trim() 
+          range: match[2],
+          name: match[3].trim()
         });
       }
   
@@ -567,15 +572,13 @@ function getContentByIdPromise(pageId, expandString) {
         return 'Не найдено';
       }
   
-      // Здесь определяем, к какому диапазону относится текущая дата
-      const { DateTime } = require('luxon');
+      // Проверяем, попадает ли сегодняшняя дата в один из интервалов
       const today = DateTime.now().setZone('Europe/Moscow');
-  
       for (const item of schedule) {
-        const [startStr, endStr] = item.range.split('-'); // например, "06.01" и "12.01"
+        const [startStr, endStr] = item.range.split('-');
         const [startDay, startMonth] = startStr.split('.');
         const [endDay, endMonth] = endStr.split('.');
-        const year = 2025; // если в таблице явно указан 2025
+        const year = 2025;
   
         const startDate = DateTime.fromObject({
           year,
@@ -583,7 +586,6 @@ function getContentByIdPromise(pageId, expandString) {
           day: Number(startDay),
           zone: 'Europe/Moscow'
         });
-  
         const endDate = DateTime.fromObject({
           year,
           month: Number(endMonth),
@@ -591,15 +593,12 @@ function getContentByIdPromise(pageId, expandString) {
           zone: 'Europe/Moscow'
         });
   
-        // Если текущая дата в диапазоне
         if (today >= startDate && today <= endDate) {
-          return item.name; 
+          return item.name;
         }
       }
   
-      // Если ничего не подошло
       return 'Не найдено';
-  
     } catch (error) {
       console.error('Ошибка получения данных из Confluence:', error);
       return 'Ошибка при запросе';
