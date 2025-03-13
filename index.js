@@ -523,9 +523,10 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // Допустим, что ID или пространство страницы - условное (надо уточнить реальный)
 // Функция извлекает дежурного специалиста, сверяя сегодняшнюю дату и диапазон
 // 1) Помощник: оборачивает confluence.getContentById(...) в Promise
-function getContentByIdPromise(pageId, expand) {
+function getContentByIdPromise(pageId, expandString) {
     return new Promise((resolve, reject) => {
-      confluence.getContentById(pageId, expand, (err, data) => {
+      // Вызов с объектом params как вторым аргументом, а колбэком — третьим
+      confluence.getContentById(pageId, { expand: expandString }, (err, data) => {
         if (err) {
           reject(err);
         } else {
