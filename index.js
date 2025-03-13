@@ -540,7 +540,7 @@ function getContentByIdPromise(pageId, expand) {
     try {
       const pageId = '3539406'; // Замените на ваш реальный pageId
       // Делаем «промисифицированный» вызов к Confluence
-      const response = await getContentByIdPromise(pageId, 'body.export_view');
+      const response = await getContentByIdPromise(pageId, 'body.view');
       // Теперь в response то, что библиотека normally передает в колбэк (err, data)
   
       const html = response.body.export_view.value;
