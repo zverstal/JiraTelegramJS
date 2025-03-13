@@ -533,17 +533,14 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
     function fetchDutyEngineer(callback) {
         const pageId = '3539406'; // Ваш реальный pageId
       
-        // Вызываем наш «мини-клиент»
+        // Вызываем «мини-клиент» (confluence.getContentById), который делает GET-запрос с Bearer-токеном
         confluence.getContentById(pageId, (err, data) => {
           if (err) {
             console.error('Ошибка при запросе Confluence:', err);
             return callback(err);
           }
       
-          // Предположим, нам нужно поле data.body.view.value
-          // Для этого нужен параметр ?expand=body.view в URL
-          // Давайте сделаем отдельный запрос, где расширяем поля:
-          // (Можно переписать, чтобы сразу в getContentById использовать expand)
+          // Делаем второй запрос с ?expand=body.view, чтобы получить body.view.value
           axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
             headers: {
               'Authorization': `Bearer ${process.env.CONFLUENCE_API_TOKEN}`,
@@ -564,7 +561,7 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
             while ((match = rowRegex.exec(html)) !== null) {
               schedule.push({
                 index: match[1],
-                range: match[2],     // «06.01-12.01»
+                range: match[2], // «06.01-12.01»
                 name: match[3].trim()
               });
             }
@@ -573,8 +570,10 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
               return callback(null, 'Не найдено');
             }
       
-            // Сравниваем сегодняшнюю дату с интервалом
-            const today = DateTime.now().setZone('Europe/Moscow');
+            // Вместо Europe/Moscow используем "UTC+3"
+            // Так Luxon не станет искать IANA-зону и не выкинет InvalidUnitError
+            const today = DateTime.now().setZone('UTC+3');
+      
             for (const item of schedule) {
               const [startStr, endStr] = item.range.split('-');
               const [startDay, startMonth] = startStr.split('.');
@@ -585,13 +584,13 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
                 year,
                 month: Number(startMonth),
                 day: Number(startDay),
-                zone: 'Europe/Moscow'
+                zone: 'UTC+3'
               });
               const endDate = DateTime.fromObject({
                 year,
                 month: Number(endMonth),
                 day: Number(endDay),
-                zone: 'Europe/Moscow'
+                zone: 'UTC+3'
               });
       
               if (today >= startDate && today <= endDate) {
@@ -618,6 +617,7 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
           ctx.reply(`Дежурный: ${engineer}`);
         });
       });
+      
 
 //---------------------------------------------------------------------
 // Расписание ночной и утренней смены
