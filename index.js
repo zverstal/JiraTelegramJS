@@ -638,24 +638,25 @@ bot.command('start', async (ctx) => {
             scheduled: true,
             timezone: 'Europe/Moscow'
         });
-
+    
         // Утренняя смена - в 10:00
         if (!morningShiftCron) {
             morningShiftCron = cron.schedule('0 10 * * *', async () => {
                 try {
-                  const engineer = await fetchDutyEngineer();
-                  await bot.api.sendMessage(
-                    process.env.ADMIN_CHAT_ID,
-                    `Доброе утро! Не забудь проверить задачи на сегодня: заполни тикет передачи смены.\nДежурный специалист: ${engineer}`
-                  );
+                    const engineer = await fetchDutyEngineer();
+                    await bot.api.sendMessage(
+                        process.env.ADMIN_CHAT_ID,
+                        `Доброе утро! Не забудь проверить задачи на сегодня: заполни тикет передачи смены.\nДежурный специалист: ${engineer}`
+                    );
                 } catch (err) {
-                  console.error('Ошибка при получении дежурного:', err);
+                    console.error('Ошибка при получении дежурного:', err);
                 }
-              }, {
+            }, {
                 scheduled: true,
                 timezone: 'Europe/Moscow'
-              });
-
+            });
+        }  // <-- ВОТ эта закрывающая скобка
+    
         nightShiftCron.start();
         morningShiftCron.start();
     }
