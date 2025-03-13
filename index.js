@@ -544,7 +544,7 @@ function getContentByIdPromise(pageId, expandString) {
       const response = await getContentByIdPromise(pageId, 'body.view');
       // Теперь в response то, что библиотека normally передает в колбэк (err, data)
   
-      const html = response.body.export_view.value;
+      const html = response.body.view.value;
   
       // Далее парсим HTML. Например, ищем строки вида:
       // <tr><td>1</td><td>06.01-12.01</td><td>Белогур</td></tr>
