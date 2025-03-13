@@ -572,7 +572,7 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
       
             // Вместо Europe/Moscow используем "UTC+3"
             // Так Luxon не станет искать IANA-зону и не выкинет InvalidUnitError
-            const today = DateTime.now().setZone('UTC+3');
+            const today = DateTime.now().setZone('UTC+3:00');
       
             for (const item of schedule) {
               const [startStr, endStr] = item.range.split('-');
@@ -584,13 +584,13 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
                 year,
                 month: Number(startMonth),
                 day: Number(startDay),
-                zone: 'UTC+3'
+                zone: 'UTC+3:00'
               });
               const endDate = DateTime.fromObject({
                 year,
                 month: Number(endMonth),
                 day: Number(endDay),
-                zone: 'UTC+3'
+                zone: 'UTC+3:00'
               });
       
               if (today >= startDate && today <= endDate) {
