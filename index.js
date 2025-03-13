@@ -527,7 +527,7 @@ async function fetchDutyEngineer() {
         // Найти по реальному ID страницы (если известен)
         // Либо использовать getContentByPageTitle / search для поиска.
         // Здесь для примера используем некий pageId:
-        const pageId = '123456789'; // Замените на реальный ID статьи
+        const pageId = '3539406'; // Замените на реальный ID статьи
 
         // Запрашиваем содержимое статьи в виде HTML
         const response = await confluence.getContentById(pageId, 'body.export_view');
