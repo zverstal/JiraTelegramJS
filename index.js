@@ -514,94 +514,100 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 //---------------------------------------------------------------------
 // Допустим, что ID или пространство страницы - условное (надо уточнить реальный)
 // Функция извлекает дежурного специалиста, сверяя сегодняшнюю дату и диапазон
+async function fetchDutyEngineer() {
+    try {
+      const pageId = '3539406'; // замените на ваш реальный pageId
+      const token = process.env.CONFLUENCE_API_TOKEN; // Bearer-токен из .env
+  
+      // 1) Делаем GET-запрос к Confluence с expand=body.view
+      const resp = await axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        }
+      });
+  
+      // Если нужного поля нет, значит страница недоступна или нет прав
+      const html = resp.data?.body?.view?.value;
+      if (!html) {
+        console.log('Не удалось получить HTML из body.view.value');
+        return 'Не найдено';
+      }
+  
+      // 2) Парсим HTML, ищем строки вида:
+      // <tr><td>1</td><td>06.01-12.01</td><td>Иванов</td></tr>
+      const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
+      const schedule = [];
+      let match;
+  
+      while ((match = rowRegex.exec(html)) !== null) {
+        schedule.push({
+          index: match[1],   // "1", "2", ...
+          range: match[2],   // "06.01-12.01"
+          name: match[3].trim()
+        });
+      }
+  
+      if (schedule.length === 0) {
+        console.log('Не удалось извлечь расписание дежурств из HTML.');
+        return 'Не найдено';
+      }
+  
+      // 3) Получаем "сегодня" по Москве в формате 'yyyy-MM-dd HH:mm:ss'
+      const nowStr = getMoscowTimestamp(); // например "2025-03-10 13:45:00"
+      // Парсим его в Luxon DateTime
+      const today = DateTime.fromFormat(nowStr, 'yyyy-MM-dd HH:mm:ss');
+  
+      // Перебираем все интервалы из таблицы
+      for (const item of schedule) {
+        const [startStr, endStr] = item.range.split('-'); // "06.01" / "12.01"
+        const [startDay, startMonth] = startStr.split('.');
+        const [endDay, endMonth] = endStr.split('.');
+        const year = 2025; // в таблице указан 2025
+  
+        // startDate / endDate тоже делаем DateTime без zone
+        // (мы сравниваем с today, который также локальный)
+        const startDate = DateTime.fromObject({
+          year,
+          month: Number(startMonth),
+          day: Number(startDay)
+        });
+        const endDate = DateTime.fromObject({
+          year,
+          month: Number(endMonth),
+          day: Number(endDay)
+        });
+  
+        // Если today входит в [startDate..endDate], возвращаем фамилию
+        if (today >= startDate && today <= endDate) {
+          return item.name;
+        }
+      }
+  
+      // Если ни один интервал не подошёл
+      return 'Не найдено';
+  
+    } catch (error) {
+      console.error('Ошибка при запросе к Confluence:', error);
+      throw error; // пробрасываем выше, чтобы можно было отловить в вызывающем коде
+    }
+  }
+  
+  module.exports = { fetchDutyEngineer };
 
 
+  const { fetchDutyEngineer } = require('./fetchDutyEngineer');
 
-function fetchDutyEngineer(callback) {
- const pageId = '3539406'; // ваш реальный pageId
- const token = process.env.CONFLUENCE_API_TOKEN; // ваш Bearer token
-
- // Запрос с ?expand=body.view, получаем HTML в resp.data.body.view.value
- axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
-   headers: {
-     'Authorization': `Bearer ${token}`,
-     'Accept': 'application/json'
-   }
- })
- .then(resp => {
-   // Если нет поля, значит страница недоступна / нет прав / не то ID
-   const html = resp.data?.body?.view?.value;
-   if (!html) {
-     console.log('Не удалось получить HTML из body.view.value');
-     return callback(null, 'Не найдено');
-   }
-
-   // Находим строки вида <tr><td>1</td><td>06.01-12.01</td><td>Фамилия</td></tr>
-   const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
-   const schedule = [];
-   let match;
-
-   while ((match = rowRegex.exec(html)) !== null) {
-     schedule.push({
-       index: match[1],
-       range: match[2], // "06.01-12.01"
-       name: match[3].trim()
-     });
-   }
-
-   if (schedule.length === 0) {
-     console.log('Не удалось извлечь расписание дежурств из HTML.');
-     return callback(null, 'Не найдено');
-   }
-
-   // Сопоставляем текущую «московскую» дату с диапазонами
-   // Предположим, что у вас уже есть функция getMoscowTimestamp()
-   // которая возвращает "YYYY-MM-DD HH:mm:ss"
-   const nowStr = getMoscowTimestamp(); // например "2025-03-10 13:45:00"
-   const today = DateTime.fromFormat(nowStr, 'yyyy-MM-dd HH:mm:ss');
-
-   for (const item of schedule) {
-     const [startStr, endStr] = item.range.split('-'); // "06.01"-"12.01"
-     const [startDay, startMonth] = startStr.split('.');
-     const [endDay, endMonth] = endStr.split('.');
-     const year = 2025; // из вашей таблицы
-
-     const startDate = DateTime.fromObject({
-       year,
-       month: Number(startMonth),
-       day: Number(startDay)
-     });
-     const endDate = DateTime.fromObject({
-       year,
-       month: Number(endMonth),
-       day: Number(endDay)
-     });
-
-     if (today >= startDate && today <= endDate) {
-       return callback(null, item.name); // возвращаем фамилию дежурного
-     }
-   }
-
-   // Если сегодня не попадает в ни один интервал
-   callback(null, 'Не найдено');
- })
- .catch(err => {
-   console.error('Ошибка при запросе к Confluence:', err);
-   callback(err);
- });
-}
-
-// Команда /duty, колбэк-стиль
-bot.command('duty', (ctx) => {
- fetchDutyEngineer((err, engineer) => {
-   if (err) {
-     ctx.reply('Ошибка при получении дежурного.');
-     return;
-   }
-   ctx.reply(`Дежурный: ${engineer}`);
- });
+// Пример команды /duty
+bot.command('duty', async (ctx) => {
+  try {
+    const engineer = await fetchDutyEngineer();
+    await ctx.reply(`Дежурный: ${engineer}`);
+  } catch (err) {
+    console.error('Ошибка при получении дежурного:', err);
+    await ctx.reply('Произошла ошибка при запросе дежурного.');
+  }
 });
-
       
 
 //---------------------------------------------------------------------
@@ -640,16 +646,19 @@ bot.command('start', async (ctx) => {
         // Утренняя смена - в 10:00
         if (!morningShiftCron) {
             morningShiftCron = cron.schedule('0 10 * * *', async () => {
-                const engineer = await fetchDutyEngineer();
-                await bot.api.sendMessage(
+                try {
+                  const engineer = await fetchDutyEngineer();
+                  await bot.api.sendMessage(
                     process.env.ADMIN_CHAT_ID,
                     `Доброе утро! Не забудь проверить задачи на сегодня: заполни тикет передачи смены.\nДежурный специалист: ${engineer}`
-                );
-            }, {
+                  );
+                } catch (err) {
+                  console.error('Ошибка при получении дежурного:', err);
+                }
+              }, {
                 scheduled: true,
                 timezone: 'Europe/Moscow'
-            });
-        }
+              });
 
         nightShiftCron.start();
         morningShiftCron.start();
