@@ -12,19 +12,6 @@ const bot = new Bot(process.env.BOT_API_KEY);
 // Создаем базу данных
 const db = new sqlite3.Database('tasks.db');
 
-const confluence = {
-    getContentById(pageId, callback) {
-      axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}`, {
-        headers: {
-          // Важно: Bearer и ваш токен
-          'Authorization': `Bearer ${process.env.CONFLUENCE_API_TOKEN}`,
-          'Accept': 'application/json'
-        }
-      })
-      .then(response => callback(null, response.data))
-      .catch(err => callback(err));
-    }
-  };
 
 // Функция для получения текущего времени Москвы в формате 'yyyy-MM-dd HH:mm:ss'
 function getMoscowTimestamp() {
@@ -528,96 +515,93 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // Допустим, что ID или пространство страницы - условное (надо уточнить реальный)
 // Функция извлекает дежурного специалиста, сверяя сегодняшнюю дату и диапазон
 
-// Без промисов: вся логика парсинга — внутри колбэка.
+
+
 function fetchDutyEngineer(callback) {
-    // Тут ваш реальный pageId
-    const pageId = '3539406';
+ const pageId = '3539406'; // ваш реальный pageId
+ const token = process.env.CONFLUENCE_API_TOKEN; // ваш Bearer token
 
-    // Вместо getContentById(...) используем getCustomContentById(...)
-    confluence.getCustomContentById({
-      id: pageId,
-      expanders: ['body.view']
-    }, (err, data) => {
-      if (err) {
-        console.error('Ошибка при getCustomContentById:', err);
-        return callback(err);
-      }
+ // Запрос с ?expand=body.view, получаем HTML в resp.data.body.view.value
+ axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
+   headers: {
+     'Authorization': `Bearer ${token}`,
+     'Accept': 'application/json'
+   }
+ })
+ .then(resp => {
+   // Если нет поля, значит страница недоступна / нет прав / не то ID
+   const html = resp.data?.body?.view?.value;
+   if (!html) {
+     console.log('Не удалось получить HTML из body.view.value');
+     return callback(null, 'Не найдено');
+   }
 
-      if (!data || !data.body || !data.body.view) {
-        console.log('В ответе нет поля body.view. Возможно, нет доступа или страница пуста.');
-        return callback(null, 'Не найдено');
-      }
+   // Находим строки вида <tr><td>1</td><td>06.01-12.01</td><td>Фамилия</td></tr>
+   const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
+   const schedule = [];
+   let match;
 
-      // Содержимое HTML
-      const html = data.body.view.value;
+   while ((match = rowRegex.exec(html)) !== null) {
+     schedule.push({
+       index: match[1],
+       range: match[2], // "06.01-12.01"
+       name: match[3].trim()
+     });
+   }
 
-      // Парсим HTML (ищем строки, напр. <tr><td>1</td><td>06.01-12.01</td><td>Белогур</td></tr>)
-      const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
-      const schedule = [];
-      let match;
+   if (schedule.length === 0) {
+     console.log('Не удалось извлечь расписание дежурств из HTML.');
+     return callback(null, 'Не найдено');
+   }
 
-      while ((match = rowRegex.exec(html)) !== null) {
-        schedule.push({
-          index: match[1],    // "1", "2" и т.п.
-          range: match[2],    // "06.01-12.01"
-          name: match[3].trim()
-        });
-      }
+   // Сопоставляем текущую «московскую» дату с диапазонами
+   // Предположим, что у вас уже есть функция getMoscowTimestamp()
+   // которая возвращает "YYYY-MM-DD HH:mm:ss"
+   const nowStr = getMoscowTimestamp(); // например "2025-03-10 13:45:00"
+   const today = DateTime.fromFormat(nowStr, 'yyyy-MM-dd HH:mm:ss');
 
-      if (schedule.length === 0) {
-        console.log('Не удалось извлечь расписание дежурств из HTML.');
-        return callback(null, 'Не найдено');
-      }
+   for (const item of schedule) {
+     const [startStr, endStr] = item.range.split('-'); // "06.01"-"12.01"
+     const [startDay, startMonth] = startStr.split('.');
+     const [endDay, endMonth] = endStr.split('.');
+     const year = 2025; // из вашей таблицы
 
-      // Вместо DateTime.now().setZone('Europe/Moscow') используем getMoscowTimestamp()
-      // Возвращает строку "YYYY-MM-DD HH:mm:ss". Парсим её в DateTime:
-      const nowStr = getMoscowTimestamp(); // например, "2025-04-01 10:15:23"
-      const today = DateTime.fromFormat(nowStr, 'yyyy-MM-dd HH:mm:ss');
+     const startDate = DateTime.fromObject({
+       year,
+       month: Number(startMonth),
+       day: Number(startDay)
+     });
+     const endDate = DateTime.fromObject({
+       year,
+       month: Number(endMonth),
+       day: Number(endDay)
+     });
 
-      // Проверяем, какая запись подходит под текущую дату
-      for (const item of schedule) {
-        const [startStr, endStr] = item.range.split('-'); // например, "06.01" и "12.01"
-        const [startDay, startMonth] = startStr.split('.');
-        const [endDay, endMonth] = endStr.split('.');
-        const year = 2025; // в вашей таблице явно 2025
+     if (today >= startDate && today <= endDate) {
+       return callback(null, item.name); // возвращаем фамилию дежурного
+     }
+   }
 
-        // Для даты начала и конца тоже создаём DateTime без явного zone
-        // (уже «московское» время, если getMoscowTimestamp() выдаёт его)
-        const startDate = DateTime.fromObject({
-          year,
-          month: Number(startMonth),
-          day: Number(startDay),
-          // без zone или setZone(...) — полагаемся на локальную трактовку
-        });
-
-        const endDate = DateTime.fromObject({
-          year,
-          month: Number(endMonth),
-          day: Number(endDay),
-        });
-
-        // Если "сейчас" (по Москве) внутри интервала [startDate, endDate]
-        if (today >= startDate && today <= endDate) {
-          return callback(null, item.name); // Фамилию дежурного
-        }
-      }
-
-      // Если ни один интервал не подошёл
-      return callback(null, 'Не найдено');
-    });
+   // Если сегодня не попадает в ни один интервал
+   callback(null, 'Не найдено');
+ })
+ .catch(err => {
+   console.error('Ошибка при запросе к Confluence:', err);
+   callback(err);
+ });
 }
 
-// Пример использования в команде /duty
+// Команда /duty, колбэк-стиль
 bot.command('duty', (ctx) => {
-  fetchDutyEngineer((err, engineer) => {
-    if (err) {
-      console.error('Ошибка fetchDutyEngineer:', err);
-      ctx.reply('Произошла ошибка при запросе дежурного.');
-      return;
-    }
-    ctx.reply(`Дежурный: ${engineer}`);
-  });
+ fetchDutyEngineer((err, engineer) => {
+   if (err) {
+     ctx.reply('Ошибка при получении дежурного.');
+     return;
+   }
+   ctx.reply(`Дежурный: ${engineer}`);
+ });
 });
+
       
 
 //---------------------------------------------------------------------
