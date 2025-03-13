@@ -526,30 +526,30 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // Без промисов: вся логика парсинга — внутри колбэка.
 // fetchDutyEngineer принимает колбэк (err, result) => {}
     function fetchDutyEngineer(callback) {
-        // Ваш реальный pageId
+        // Тут ваш реальный pageId
         const pageId = '3539406';
       
-        // Вызываем getContentById С ТРЕМЯ АРГУМЕНТАМИ:
-        // 1) pageId
-        // 2) объект { expand: 'body.view' }
-        // 3) колбэк (err, data)
-        confluence.getContentById(pageId, { expand: 'body.view' }, (err, data) => {
+        // Вместо getContentById(...) используем getCustomContentById(...).
+        // Указываем expanders: ['body.view'] — так библиотека вернёт HTML в `data.body.view.value`
+        confluence.getCustomContentById({
+          id: pageId,
+          expanders: ['body.view']
+        }, (err, data) => {
           if (err) {
-            console.error('Ошибка при getContentById:', err);
-            // Передаём ошибку колбэку
-            return callback(err);
+            console.error('Ошибка при getCustomContentById:', err);
+            return callback(err); // прокидываем ошибку наружу
           }
       
-          // Проверяем, есть ли body.view
+          // Проверим, есть ли нужные поля
           if (!data || !data.body || !data.body.view) {
-            console.log('В ответе нет поля body.view - нет доступа или неверный expand.');
+            console.log('В ответе нет поля body.view. Возможно, нет доступа или страница пуста.');
             return callback(null, 'Не найдено');
           }
       
-          // Вот сам HTML:
+          // Содержимое HTML
           const html = data.body.view.value;
       
-          // Парсим HTML (ищем строки вида <tr><td>1</td><td>06.01-12.01</td><td>Белогур</td></tr>)
+          // Пример парсинга HTML (ищем строки в таблице)
           const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
           const schedule = [];
           let match;
@@ -557,7 +557,7 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
           while ((match = rowRegex.exec(html)) !== null) {
             schedule.push({
               index: match[1],
-              range: match[2],
+              range: match[2], // типа "06.01-12.01"
               name: match[3].trim()
             });
           }
@@ -567,15 +567,15 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
             return callback(null, 'Не найдено');
           }
       
-          // Определяем, попадает ли сегодняшняя дата в один из интервалов
+          // Проверим, попадает ли сегодняшняя дата в один из интервалов
           const { DateTime } = require('luxon');
           const today = DateTime.now().setZone('Europe/Moscow');
       
           for (const item of schedule) {
-            const [startStr, endStr] = item.range.split('-');
+            const [startStr, endStr] = item.range.split('-'); // '06.01' - '12.01'
             const [startDay, startMonth] = startStr.split('.');
             const [endDay, endMonth] = endStr.split('.');
-            const year = 2025; // Указан в таблице
+            const year = 2025; // в вашей таблице указан 2025
       
             const startDate = DateTime.fromObject({
               year,
@@ -592,21 +592,21 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
             });
       
             if (today >= startDate && today <= endDate) {
-              // Если нашли интервал, возвращаем фамилию
+              // Если нашли подходящий интервал, возвращаем фамилию дежурного
               return callback(null, item.name);
             }
           }
       
           // Если ни один интервал не подошел
-          return callback(null, 'Не найдено');
+          callback(null, 'Не найдено');
         });
       }
       
-      // Пример использования fetchDutyEngineer в коде бота (колбэк-стиль):
+      // Пример использования в боте, колбэком:
       bot.command('duty', (ctx) => {
         fetchDutyEngineer((err, engineer) => {
           if (err) {
-            console.error('fetchDutyEngineer error:', err);
+            console.error('Ошибка fetchDutyEngineer:', err);
             ctx.reply('Произошла ошибка при запросе дежурного.');
             return;
           }
