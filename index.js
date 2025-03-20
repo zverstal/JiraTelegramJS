@@ -488,10 +488,23 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
-            // Проверяем, развернуто ли описание (исправленный код)
+            // Проверяем, развернуто ли описание
             const isExpanded = ctx.callbackQuery.message?.text?.includes(fullDescription.substring(0, 20));
 
             if (!isExpanded) {
+                // **🔹 Отправляем вложения перед обновлением текста**
+                const attachments = issue.fields.attachment
+                    .filter(att => att.mimeType.startsWith('image/') || att.mimeType.startsWith('video/'))
+                    .map(att => ({
+                        type: att.mimeType.startsWith('image/') ? 'photo' : 'video',
+                        media: att.content
+                    }));
+
+                if (attachments.length > 0) {
+                    await ctx.replyWithMediaGroup(attachments);
+                }
+
+                // **🔹 Формируем развернутый текст**
                 const expandedText = `📌 *Задача:* [${task.id}](${taskUrl})\n` +
                     `📍 *Источник:* ${task.source}\n` +
                     `🔹 *Приоритет:* ${priorityEmoji} ${task.priority}\n` +
@@ -508,14 +521,15 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 });
 
             } else {
-                // Сворачиваем описание
+                // **🔹 Восстанавливаем кнопки и сворачиваем описание**
                 const collapsedText = `📌 *Задача:* [${task.id}](${taskUrl})\n` +
                     `📍 *Источник:* ${task.source}\n` +
                     `🔹 *Приоритет:* ${priorityEmoji} ${task.priority}\n`;
 
                 const keyboard = new InlineKeyboard()
-                    .text('⬇ Подробнее', `toggle_description:${task.id}`)
-                    .url('📌 Открыть в Jira', taskUrl);
+                    .text('🛠 Взять в работу', `take_task:${task.id}`)
+                    .url('📌 Перейти к задаче', taskUrl)
+                    .text('⬇ Подробнее', `toggle_description:${task.id}`);
 
                 await ctx.editMessageText(collapsedText, {
                     parse_mode: 'Markdown',
