@@ -528,6 +528,7 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 
 // ----------------------------------------------------------------------------------
 // ----------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------------
 // Функция экранирования HTML
 function escapeHtml(text) {
     return text
@@ -536,7 +537,7 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
-// Функция обработки блоков кода ({code:язык} ... {code} и {code} ... {code})
+// Функция обработки блоков кода (Удаляет спойлеры ВНУТРИ кода)
 function convertCodeBlocks(text) {
     return text
         .replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (match, lang, code) => {
