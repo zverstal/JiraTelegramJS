@@ -538,6 +538,7 @@ async function buildExpandedText(task) {
 
 // show_description:(.+)
 bot.callbackQuery(/^show_description:(.+)$/, async (ctx) => {
+    console.log('>>> show_description callback triggered!', ctx.match[1]);
     try {
         await ctx.answerCallbackQuery();
         const taskId = ctx.match[1];
