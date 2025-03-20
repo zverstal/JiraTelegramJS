@@ -436,13 +436,22 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err) {
                 console.error('Ошибка при получении задачи:', err);
-                return ctx.reply('Произошла ошибка.');
+                const keyboard = new InlineKeyboard()
+                    .text('Подробнее', `toggle_description:${taskId}`)
+                    .url('Перейти к задаче', getTaskUrl('sxl', taskId));
+                return ctx.reply('Произошла ошибка при получении задачи.', { reply_markup: keyboard });
             }
+
             if (!task) {
+                const keyboard = new InlineKeyboard()
+                    .text('Подробнее', `toggle_description:${taskId}`)
+                    .url('Перейти к задаче', getTaskUrl('sxl', taskId));
+
                 try {
                     await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
                 } catch {}
-                return ctx.reply('Задача не найдена.');
+
+                return ctx.reply('Задача не найдена в БД.', { reply_markup: keyboard });
             }
 
             if (task.department === "Техническая поддержка") {
@@ -453,8 +462,12 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
                     console.error('Ошибка updateJiraTaskStatus:', errUpd);
                 }
 
+                const displayName = usernameMappings[username] || username;
+                const keyboard = new InlineKeyboard()
+                    .text('Подробнее', `toggle_description:${task.id}`)
+                    .url('Перейти к задаче', getTaskUrl(task.source, task.id));
+
                 if (success) {
-                    const displayName = usernameMappings[username] || username;
                     const msg =
                         `Задача: ${task.id}\n` +
                         `Источник: ${task.source}\n` +
@@ -465,7 +478,7 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
                         `Взял в работу: ${displayName}`;
 
                     try {
-                        await ctx.editMessageText(msg);
+                        await ctx.editMessageText(msg, { reply_markup: keyboard });
                     } catch (e) {
                         console.error('Ошибка editMessageText:', e);
                     }
@@ -473,15 +486,23 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
                     db.run(`INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)`,
                         [username, taskId, 'take_task', getMoscowTimestamp()]);
                 } else {
-                    await ctx.reply(`Не удалось обновить статус задачи ${taskId}. Попробуйте снова.`);
+                    await ctx.reply(`Не удалось обновить статус задачи ${taskId}. Попробуйте снова.`, { reply_markup: keyboard });
                 }
             } else {
-                await ctx.reply('Эта задача не для отдела Технической поддержки и не может быть взята в работу через этот бот.');
+                const keyboard = new InlineKeyboard()
+                    .text('Подробнее', `toggle_description:${task.id}`)
+                    .url('Перейти к задаче', getTaskUrl(task.source, task.id));
+
+                await ctx.reply('Эта задача не для отдела Технической поддержки и не может быть взята в работу через этот бот.', { reply_markup: keyboard });
             }
         });
     } catch (error) {
         console.error('Ошибка в take_task:', error);
-        await ctx.reply('Произошла ошибка.');
+        const keyboard = new InlineKeyboard()
+            .text('Подробнее', `toggle_description:${ctx.match[1]}`)
+            .url('Перейти к задаче', getTaskUrl('sxl', ctx.match[1]));
+
+        await ctx.reply('Произошла ошибка.', { reply_markup: keyboard });
     }
 });
 
