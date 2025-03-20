@@ -548,10 +548,30 @@ function convertCodeBlocks(rawText) {
     return rawText;
 }
 
+
+// Функция преобразования Telegram Markdown в HTML (чтобы поддерживался рендер)
+function parseCustomMarkdown(text) {
+    if (!text) return '';
+
+    return text
+        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>') // Жирный **текст**
+        .replace(/\*(.*?)\*/g, '<i>$1</i>')     // Курсив *текст*
+        .replace(/__(.*?)__/g, '<u>$1</u>')     // Подчеркнутый __текст__
+        .replace(/~~(.*?)~~/g, '<s>$1</s>')     // Зачеркнутый ~~текст~~
+        .replace(/`([^`]+)`/g, '<code>$1</code>') // Инлайн-код `code`
+        .replace(/\n- (.*?)/g, '\n• $1')        // Маркерные списки (- текст)
+        .replace(/\n\d+\. (.*?)/g, '\n🔹 $1')   // Нумерованные списки (1. текст)
+        .replace(/\|\|([^|]+)\|\|/g, '<tg-spoiler>$1</tg-spoiler>') // Спойлер
+        .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>'); // Блок кода
+}
+
+
 // Функция обработки описания
+// Функция обработки описания (добавляем Markdown-парсер)
 function formatDescriptionAsHtml(rawDescription) {
     let text = rawDescription || '';
-    text = convertCodeBlocks(text);
+    text = convertCodeBlocks(text); // Обрабатываем блоки кода
+    text = parseCustomMarkdown(text); // Преобразуем Markdown в HTML
     return text;
 }
 
