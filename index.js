@@ -501,7 +501,11 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     }));
 
                 if (attachments.length > 0) {
-                    await ctx.replyWithMediaGroup(attachments);
+                    try {
+                        await ctx.replyWithMediaGroup(attachments);
+                    } catch (error) {
+                        console.error("Ошибка отправки вложений:", error);
+                    }
                 }
 
                 // **🔹 Формируем развернутый текст**
@@ -512,8 +516,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     `📝 *Описание:* ${fullDescription}`;
 
                 const keyboard = new InlineKeyboard()
-                    .text('⬆ Скрыть', `toggle_description:${task.id}`)
-                    .url('📌 Открыть в Jira', taskUrl);
+                    .text('Скрыть', `toggle_description:${task.id}`)
+                    .url('Открыть в Jira', taskUrl);
 
                 await ctx.editMessageText(expandedText, {
                     parse_mode: 'Markdown',
@@ -521,15 +525,23 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 });
 
             } else {
-                // **🔹 Восстанавливаем кнопки и сворачиваем описание**
-                const collapsedText = `📌 *Задача:* [${task.id}](${taskUrl})\n` +
-                    `📍 *Источник:* ${task.source}\n` +
-                    `🔹 *Приоритет:* ${priorityEmoji} ${task.priority}\n`;
+                // **🔹 Восстанавливаем сообщение и кнопки**
+                let collapsedText = `Задача: ${task.id}\n` +
+                    `Источник: ${task.source}\n` +
+                    `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
+                    `Описание: ${task.title}\n` +
+                    `Приоритет: ${getPriorityEmoji(task.priority)}\n` +
+                    `Тип задачи: ${task.issueType}`;
 
-                const keyboard = new InlineKeyboard()
-                    .text('🛠 Взять в работу', `take_task:${task.id}`)
-                    .url('📌 Перейти к задаче', taskUrl)
-                    .text('⬇ Подробнее', `toggle_description:${task.id}`);
+                let keyboard = new InlineKeyboard();
+                if (task.department === "Техническая поддержка") {
+                    keyboard.text('Взять в работу', `take_task:${task.id}`);
+                    keyboard.url('Перейти к задаче', taskUrl);
+                    keyboard.text('Подробнее', `toggle_description:${task.id}`);
+                } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
+                    keyboard.url('Перейти к задаче', taskUrl);
+                    keyboard.text('Подробнее', `toggle_description:${task.id}`);
+                }
 
                 await ctx.editMessageText(collapsedText, {
                     parse_mode: 'Markdown',
@@ -543,6 +555,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.reply('Произошла ошибка.');
     }
 });
+
 
 
 //---------------------------------------------------------------------
