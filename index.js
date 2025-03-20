@@ -572,14 +572,6 @@ function formatDescriptionAsHtml(rawDescription) {
     return parseCustomMarkdown(rawDescription || '');
 }
 
-// Функция обработки описания
-function formatDescriptionAsHtml(rawDescription) {
-    let text = rawDescription || '';
-    text = convertCodeBlocks(text);
-    text = parseCustomMarkdown(text);
-    return text;
-}
-
 // Обработчик кнопки "Подробнее / Скрыть"
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
