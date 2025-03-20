@@ -534,6 +534,11 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
+// Функция обработки таблиц (оборачиваем в <pre></pre>)
+function formatTables(text) {
+    return text.replace(/\|(.+?)\|/g, match => `<pre>${match.trim()}</pre>`);
+}
+
 // Функция обработки блоков кода
 function convertCodeBlocks(text) {
     return text
@@ -545,44 +550,28 @@ function convertCodeBlocks(text) {
         });
 }
 
-// Функция обработки Telegram Markdown в HTML
+// Функция преобразования Markdown в HTML
 function parseCustomMarkdown(text) {
     if (!text) return '';
 
-    // Жирный текст (*жирный*)
-    text = text.replace(/\*(.*?)\*/g, '<b>$1</b>');
+    text = convertCodeBlocks(text); // Обрабатываем блоки кода
+    text = formatTables(text); // Обрабатываем таблицы
 
-    // Курсив (_курсив_)
-    text = text.replace(/_(.*?)_/g, '<i>$1</i>');
-
-    // Зачеркнутый текст (~зачеркнутый~)
-    text = text.replace(/~(.*?)~/g, '<s>$1</s>');
-
-    // Инлайн-код (`код`)
-    text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-    // Маркерные списки (- элемент, * элемент)
-    text = text.replace(/^\s*[\-\*]\s+(.*)/gm, '• $1');
-
-    // Нумерованные списки (1. элемент)
-    text = text.replace(/^\s*(\d+)\.\s+(.*)/gm, '🔹 $1. $2');
-
-    // Таблицы: Преобразуем в моноширинный формат (<pre>)
-    text = text.replace(/\|\|(.+?)\|\|/g, '<b>$1</b>'); // Заголовки таблицы
-    text = text.replace(/\|(.+?)\|/g, (match, content) => {
-        const cells = content.split('|').map(cell => cell.trim());
-        return `<pre>${cells.join(' | ')}</pre>`;
-    });
-
-    return text;
+    return text
+        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **Жирный**
+        .replace(/\*(.*?)\*/g, '<i>$1</i>')      // *Курсив*
+        .replace(/__(.*?)__/g, '<u>$1</u>')      // __Подчеркнутый__
+        .replace(/~~(.*?)~~/g, '<s>$1</s>')      // ~~Зачеркнутый~~
+        .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') // `Инлайн-код`
+        .replace(/^\-\s(.*)/gm, '• $1')         // - Маркированный список
+        .replace(/^\*\s(.*)/gm, '• $1')         // * Альтернативный маркированный список
+        .replace(/^\d+\.\s(.*)/gm, '🔹 $1')     // 1. Нумерованный список
+        .replace(/\n{3,}/g, '\n\n');            // Убираем повторяющиеся \n\n\n
 }
 
 // Функция обработки описания
 function formatDescriptionAsHtml(rawDescription) {
-    let text = rawDescription || '';
-    text = convertCodeBlocks(text); // Обрабатываем блоки кода
-    text = parseCustomMarkdown(text); // Преобразуем Markdown в HTML
-    return text;
+    return parseCustomMarkdown(rawDescription || '');
 }
 
 // Обработчик кнопки "Подробнее / Скрыть"
