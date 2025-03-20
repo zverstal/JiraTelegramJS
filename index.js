@@ -529,6 +529,13 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // ----------------------------------------------------------------------------------
 // 8) КНОПКА "ПОДРОБНЕЕ" / "СКРЫТЬ", С СОХРАНЕНИЕМ ВЛОЖЕНИЙ НА СЕРВЕРЕ
 // ----------------------------------------------------------------------------------
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
         await ctx.answerCallbackQuery();
@@ -536,50 +543,67 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
 
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err || !task) {
-                console.error('Ошибка при получении задачи:', err);
-                await ctx.reply('Произошла ошибка.');
+                console.error('Ошибка при получении задачи из базы данных:', err);
+                await ctx.reply('Произошла ошибка при обработке вашего запроса.');
                 return;
             }
 
-            // Получаем полные данные из Jira
+            if (!task) {
+                try {
+                    // Если нет задачи – убираем кнопки
+                    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+                } catch (e) {
+                    console.error('Ошибка при снятии кнопок:', e);
+                }
+                await ctx.reply('Задача не найдена.');
+                return;
+            }
+
+            // Загружаем Jira, чтобы получить summary/description/attachments
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
                 await ctx.reply('Не удалось загрузить данные из Jira.');
                 return;
             }
 
+            // Поля
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
-            // Проверяем, развернуто ли
-            const isExpanded = ctx.callbackQuery.message?.text?.includes(fullDescription.substring(0, 20));
+            // Экранируем HTML
+            const safeSummary = escapeHtml(summary);
+            const safeDescription = escapeHtml(fullDescription);
+            const safeTitle = escapeHtml(task.title);
+
+            // Проверяем маркер expanded:true
+            const currentText = ctx.callbackQuery.message?.text || '';
+            const isExpanded = currentText.includes('expanded:true');
 
             if (!isExpanded) {
-                // ----- РАЗВОРАЧИВАЕМ -----
+                // ---------- РАЗВОРАЧИВАЕМ ----------
+                // Добавим "expanded:true" в текст (скрытый маркер, например комментарий)
+                // \n<!-- expanded:true -->
                 const expandedText =
-                    `Задача: [${task.id}](${taskUrl})\n` +
-                    `Источник: ${task.source}\n` +
-                    `Приоритет: ${priorityEmoji} ${task.priority}\n` +
-                    `Тип: ${task.issueType}\n` +
-                    `Заголовок: ${summary}\n\n` +
-                    `Описание: ${fullDescription}`;
+                    `<b>Задача:</b> ${task.id}\n` +
+                    `<b>Источник:</b> ${task.source}\n` +
+                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
+                    `<b>Тип:</b> ${task.issueType}\n` +
+                    `<b>Заголовок:</b> ${safeSummary}\n\n` +
+                    `<b>Описание:</b> ${safeDescription}\n` +
+                    `<!-- expanded:true -->`; // наш маркер
 
-                // Генерируем кнопки: "Скрыть" и вложения (через наш сервер)
+                // Готовим кнопки: "Скрыть"
                 const keyboard = new InlineKeyboard()
-                    .text('Скрыть', `toggle_description:${task.id}`);
+                    .text('Скрыть', `toggle_description:${task.id}`)
+                    .url('Открыть в Jira', taskUrl);
 
-                // Ссылку "Открыть в Jira"
-                keyboard.url('Открыть в Jira', taskUrl);
-
-                // СКАЧИВАЕМ вложения у Jira, сохраняем, генерируем ссылки
+                // Скачиваем вложения
                 const attachments = issue.fields.attachment || [];
                 let counter = 1;
-
                 for (const att of attachments) {
                     try {
-                        // Скачиваем
                         const fileResp = await axios.get(att.content, {
                             responseType: 'arraybuffer',
                             headers: {
@@ -591,46 +615,40 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                             }
                         });
 
-                        // Определяем расширение
-                        const fileExt = att.mimeType.startsWith('image/') ? '.jpg'
-                                     : att.mimeType.startsWith('video/') ? '.mp4'
-                                     : '';
+                        let originalFilename = att.filename || 'file.bin';
+                        // "чистим" имя
+                        originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
 
-                        // Случайное имя
-                        const fileName = uuidv4() + fileExt;
-                        const filePath = path.join(ATTACHMENTS_DIR, fileName);
-
-                        // Сохраняем
+                        const finalName = `${uuidv4()}_${originalFilename}`;
+                        const filePath = path.join(ATTACHMENTS_DIR, finalName);
                         fs.writeFileSync(filePath, fileResp.data);
 
-                        // Формируем публичный URL: (например, http://server_ip:3000/attachments/<fileName>)
-                        // Вставьте свой домен/IP
-                        const publicUrl = `http://YOUR_DOMAIN_OR_IP:${PORT}/attachments/${fileName}`;
-
-                        // Добавляем кнопку
+                        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
                         keyboard.row().url(`Вложение #${counter}`, publicUrl);
                         counter++;
-                    } catch (downloadErr) {
-                        console.error('Ошибка при скачивании вложения:', downloadErr);
+                    } catch (errAttach) {
+                        console.error('Ошибка при скачивании вложения:', errAttach);
                     }
                 }
 
                 await ctx.editMessageText(expandedText, {
-                    parse_mode: 'Markdown',
+                    parse_mode: 'HTML',
                     reply_markup: keyboard
                 });
 
             } else {
-                // ----- СВЕРНУТЬ -----
+                // ---------- СВЁРТЫВАЕМ ----------
+                // Удалим описание, поставим "expanded:false"
                 const collapsedText =
-                    `Задача: ${task.id}\n` +
-                    `Источник: ${task.source}\n` +
-                    `Ссылка: ${taskUrl}\n` +
-                    `Описание: ${task.title}\n` +
-                    `Приоритет: ${priorityEmoji} ${task.priority}\n` +
-                    `Тип задачи: ${task.issueType}`;
+                    `<b>Задача:</b> ${task.id}\n` +
+                    `<b>Источник:</b> ${task.source}\n` +
+                    `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a>\n` +
+                    `<b>Описание:</b> ${safeTitle}\n` +
+                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
+                    `<b>Тип задачи:</b> ${task.issueType}\n` +
+                    `<!-- expanded:false -->`; // маркер
 
-                let keyboard = new InlineKeyboard();
+                const keyboard = new InlineKeyboard();
                 if (task.department === "Техническая поддержка") {
                     keyboard
                         .text('Взять в работу', `take_task:${task.id}`)
@@ -643,14 +661,14 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 }
 
                 await ctx.editMessageText(collapsedText, {
-                    parse_mode: 'Markdown',
+                    parse_mode: 'HTML',
                     reply_markup: keyboard
                 });
             }
         });
     } catch (error) {
-        console.error('Ошибка при обработке toggle_description:', error);
-        await ctx.reply('Произошла ошибка.');
+        console.error('Ошибка в обработчике toggle_description:', error);
+        await ctx.reply('Произошла ошибка при обработке вашего запроса.');
     }
 });
 
