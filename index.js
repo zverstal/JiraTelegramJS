@@ -5,6 +5,8 @@ const sqlite3 = require('sqlite3').verbose();
 const { DateTime } = require('luxon');
 const cron = require('node-cron');
 const Bottleneck = require('bottleneck');
+const { InputFile } = require('grammy');
+
 
 
 // Создаем экземпляр бота
@@ -477,83 +479,72 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Получаем данные задачи из Jira
+            // Допустим, мы уже загрузили полные данные задачи из Jira
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
-                await ctx.reply('Ошибка загрузки данных из Jira.');
+                await ctx.reply('Не удалось загрузить данные из Jira.');
                 return;
             }
 
-            const summary = issue.fields.summary || 'Нет заголовка';
-            const fullDescription = issue.fields.description || 'Нет описания';
-            const taskUrl = getTaskUrl(task.source, task.id);
-
-            // Проверяем, развернуто ли описание
-            const isExpanded = ctx.callbackQuery.message?.text?.includes(fullDescription.substring(0, 20));
-
-            if (!isExpanded) {
-                // **🔹 Отправляем вложения перед обновлением текста**
-                const attachments = issue.fields.attachment
-                    .filter(att => att.mimeType.startsWith('image/') || att.mimeType.startsWith('video/'))
-                    .map(att => ({
-                        type: att.mimeType.startsWith('image/') ? 'photo' : 'video',
-                        media: att.content
-                    }));
-
-                if (attachments.length > 0) {
+            // --------------------------------------------------
+            // 1) Формируем массив объектов для replyWithMediaGroup
+            // --------------------------------------------------
+            const attachments = [];
+            for (const att of issue.fields.attachment || []) {
+                // Берем только изображения и видео
+                if (att.mimeType.startsWith('image/') || att.mimeType.startsWith('video/')) {
                     try {
-                        await ctx.replyWithMediaGroup(attachments);
-                    } catch (error) {
-                        console.error("Ошибка отправки вложений:", error);
+                        // 2) Скачиваем файл из Jira как arraybuffer
+                        const fileResponse = await axios.get(att.content, {
+                            responseType: 'arraybuffer',
+                            headers: {
+                                // Пат берем из окружения, в зависимости от source
+                                'Authorization': `Bearer ${
+                                    task.source === 'sxl' 
+                                        ? process.env.JIRA_PAT_SXL 
+                                        : process.env.JIRA_PAT_BETONE
+                                }`
+                            }
+                        });
+
+                        // 3) Превращаем результат в Buffer
+                        const fileBuffer = Buffer.from(fileResponse.data);
+
+                        // 4) Создаем объект вложения
+                        attachments.push({
+                            type: att.mimeType.startsWith('image/') ? 'photo' : 'video',
+                            media: new InputFile(fileBuffer, att.filename || 'file')
+                        });
+                    } catch (errDownload) {
+                        console.error(`Ошибка при скачивании вложения ${att.filename}:`, errDownload);
                     }
                 }
-
-                // **🔹 Формируем развернутый текст (с заголовком и описанием)**
-                const expandedText = `Задача: [${task.id}](${taskUrl})\n` +
-                    `Источник: ${task.source}\n` +
-                    `Тип: ${task.issueType}\n` +
-                    `Заголовок: ${summary}\n\n` +
-                    `Описание: ${fullDescription}`;
-
-                const keyboard = new InlineKeyboard()
-                    .text('Скрыть', `toggle_description:${task.id}`)
-                    .url('Открыть в Jira', taskUrl);
-
-                await ctx.editMessageText(expandedText, {
-                    parse_mode: 'Markdown',
-                    reply_markup: keyboard
-                });
-
-            } else {
-                // **🔹 Восстанавливаем сообщение и кнопки**
-                let collapsedText = `Задача: ${task.id}\n` +
-                    `Источник: ${task.source}\n` +
-                    `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
-                    `Заголовок: ${summary}\n` +
-                    `Тип задачи: ${task.issueType}`;
-
-                let keyboard = new InlineKeyboard();
-                if (task.department === "Техническая поддержка") {
-                    keyboard.text('Взять в работу', `take_task:${task.id}`);
-                    keyboard.url('Перейти к задаче', taskUrl);
-                    keyboard.text('Подробнее', `toggle_description:${task.id}`);
-                } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
-                    keyboard.url('Перейти к задаче', taskUrl);
-                    keyboard.text('Подробнее', `toggle_description:${task.id}`);
-                }
-
-                await ctx.editMessageText(collapsedText, {
-                    parse_mode: 'Markdown',
-                    reply_markup: keyboard
-                });
             }
-        });
 
+            // --------------------------------------------------
+            // 5) Если есть вложения, отправляем их одним "медиа-группой"
+            // --------------------------------------------------
+            if (attachments.length > 0) {
+                try {
+                    await ctx.replyWithMediaGroup(attachments);
+                } catch (errSend) {
+                    console.error('Ошибка при отправке вложений в Telegram:', errSend);
+                }
+            }
+
+            // --------------------------------------------------
+            // Далее уже твой код редактирования/сворачивания
+            // --------------------------------------------------
+            // Пример:
+            await ctx.editMessageText(`Описание задачи ...`, { /* ... */ });
+
+        });
     } catch (error) {
-        console.error('Ошибка при обработке кнопки "Подробнее/Скрыть":', error);
+        console.error('Ошибка:', error);
         await ctx.reply('Произошла ошибка.');
     }
 });
+
 
 
 
