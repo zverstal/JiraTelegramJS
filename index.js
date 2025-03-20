@@ -526,11 +526,6 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
     }
 }
 
-// Функция экранирования MarkdownV2 (Telegram требует экранирования спецсимволов)
-function escapeMarkdownV2(text) {
-    return text.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1'); // Экранируем спецсимволы
-}
-
 // Функция экранирования HTML
 function escapeHtml(text) {
     return text
@@ -540,25 +535,21 @@ function escapeHtml(text) {
 }
 
 // Функция обработки блоков кода
-function convertCodeBlocks(text) {
-    return text
-        .replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (match, lang, code) => {
-            code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1'));
-            return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
+function convertCodeBlocks(rawText) {
+    return rawText
+        .replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (match, lang, codeContent) => {
+            const safeCode = escapeHtml(codeContent);
+            return `<pre><code class="language-${lang}">${safeCode}</code></pre>`;
         })
-        .replace(/\{code\}([\s\S]*?)\{code\}/g, (match, code) => {
-            code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1'));
-            return `<pre><code>${code.trim()}</code></pre>`;
+        .replace(/\{code\}([\s\S]*?)\{code\}/g, (match, codeContent) => {
+            const safeCode = escapeHtml(codeContent);
+            return `<pre><code>${safeCode}</code></pre>`;
         });
 }
 
-// Функция преобразования Telegram Markdown в HTML
+// Функция минимальной обработки Markdown
 function parseCustomMarkdown(text) {
     if (!text) return '';
-
-    text = text.replace(/\|\|([^|]+)\|\|/g, '<tg-spoiler>$1</tg-spoiler>'); // Спойлер
-
-    text = convertCodeBlocks(text); // Блоки кода
 
     return text
         .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **Жирный**
@@ -567,12 +558,17 @@ function parseCustomMarkdown(text) {
         .replace(/~~(.*?)~~/g, '<s>$1</s>')      // ~~Зачеркнутый~~
         .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') // `Инлайн-код`
         .replace(/^\-\s(.*)/gm, '• $1')         // - Маркерный список
-        .replace(/^\d+\.\s(.*)/gm, '🔹 $1');    // 1. Нумерованный список
+        .replace(/^\*\s(.*)/gm, '• $1')         // * Альтернативный маркерный список
+        .replace(/^\d+\.\s(.*)/gm, '🔹 $1')     // 1. Нумерованный список
+        .replace(/\n{3,}/g, '\n\n');            // Убираем повторяющиеся \n\n\n
 }
 
 // Функция обработки описания
 function formatDescriptionAsHtml(rawDescription) {
-    return parseCustomMarkdown(rawDescription || '');
+    let text = rawDescription || '';
+    text = convertCodeBlocks(text);
+    text = parseCustomMarkdown(text);
+    return text;
 }
 
 // Обработчик кнопки "Подробнее / Скрыть"
@@ -611,7 +607,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             const isExpanded = currentText.endsWith("...");
 
             if (!isExpanded) {
-                const expandedText =
+                const expandedText = 
                     `<b>Задача:</b> ${task.id}\n` +
                     `<b>Источник:</b> ${task.source}\n` +
                     `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
@@ -624,20 +620,44 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     .text('Скрыть', `toggle_description:${task.id}`)
                     .url('Открыть в Jira', taskUrl);
 
-                try {
-                    await ctx.editMessageText(expandedText, {
-                        parse_mode: 'HTML',
-                        reply_markup: keyboard
-                    });
-                } catch (error) {
-                    console.error('Ошибка парсинга Telegram HTML:', error);
-                    await ctx.editMessageText(`⚠ Ошибка парсинга HTML. Отправляю как plain text:\n\n${escapeMarkdownV2(fullDescription)}`, {
-                        parse_mode: 'MarkdownV2'
-                    });
+                // Обрабатываем вложения
+                const attachments = issue.fields.attachment || [];
+                let counter = 1;
+                for (const att of attachments) {
+                    try {
+                        const fileResp = await axios.get(att.content, {
+                            responseType: 'arraybuffer',
+                            headers: {
+                                'Authorization': `Bearer ${
+                                    task.source === 'sxl'
+                                        ? process.env.JIRA_PAT_SXL
+                                        : process.env.JIRA_PAT_BETONE
+                                }`
+                            }
+                        });
+
+                        let originalFilename = att.filename || 'file.bin';
+                        originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
+                        const finalName = `${uuidv4()}_${originalFilename}`;
+                        const filePath = path.join(ATTACHMENTS_DIR, finalName);
+                        fs.writeFileSync(filePath, fileResp.data);
+
+                        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
+
+                        keyboard.row().url(`Вложение #${counter}`, publicUrl);
+                        counter++;
+                    } catch (errAttach) {
+                        console.error('Ошибка при скачивании вложения:', errAttach);
+                    }
                 }
 
+                await ctx.editMessageText(expandedText, {
+                    parse_mode: 'HTML',
+                    reply_markup: keyboard
+                });
+
             } else {
-                const collapsedText =
+                const collapsedText = 
                     `<b>Задача:</b> ${task.id}\n` +
                     `<b>Источник:</b> ${task.source}\n` +
                     `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a>\n` +
@@ -658,17 +678,10 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                         .text('Подробнее', `toggle_description:${task.id}`);
                 }
 
-                try {
-                    await ctx.editMessageText(collapsedText, {
-                        parse_mode: 'HTML',
-                        reply_markup: keyboard
-                    });
-                } catch (error) {
-                    console.error('Ошибка парсинга Telegram HTML:', error);
-                    await ctx.editMessageText(`⚠ Ошибка парсинга HTML. Отправляю как plain text:\n\n${escapeMarkdownV2(fullDescription)}`, {
-                        parse_mode: 'MarkdownV2'
-                    });
-                }
+                await ctx.editMessageText(collapsedText, {
+                    parse_mode: 'HTML',
+                    reply_markup: keyboard
+                });
             }
         });
     } catch (error) {
@@ -676,7 +689,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.reply('Произошла ошибка при обработке вашего запроса.');
     }
 });
-  
+
+
 // ----------------------------------------------------------------------------------
 // 9) ИНТЕГРАЦИЯ С CONFLUENCE (ДЕЖУРНЫЙ)
 // ----------------------------------------------------------------------------------
