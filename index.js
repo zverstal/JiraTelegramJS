@@ -529,6 +529,7 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // ----------------------------------------------------------------------------------
 // 8) КНОПКА "ПОДРОБНЕЕ" / "СКРЫТЬ", С СОХРАНЕНИЕМ ВЛОЖЕНИЙ НА СЕРВЕРЕ
 // ----------------------------------------------------------------------------------
+// Функция экранирования HTML, чтобы <, >, & не ломали теги
 function escapeHtml(text) {
     return text
         .replace(/&/g, '&amp;')
@@ -536,70 +537,67 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
+// Обработчик кнопки "Подробнее/Скрыть"
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
+        // Не забываем ответить на колбэк
         await ctx.answerCallbackQuery();
-        const taskId = ctx.match[1];
 
+        const taskId = ctx.match[1];
+        
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err || !task) {
-                console.error('Ошибка при получении задачи из базы данных:', err);
-                await ctx.reply('Произошла ошибка при обработке вашего запроса.');
+                console.error('Ошибка при получении задачи из базы:', err);
+                await ctx.reply('Произошла ошибка.');
                 return;
             }
 
             if (!task) {
-                try {
-                    // Если нет задачи – убираем кнопки
-                    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-                } catch (e) {
-                    console.error('Ошибка при снятии кнопок:', e);
-                }
+                // Если задачи нет в БД
                 await ctx.reply('Задача не найдена.');
                 return;
             }
 
-            // Загружаем Jira, чтобы получить summary/description/attachments
+            // Загружаем детали из Jira
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
                 await ctx.reply('Не удалось загрузить данные из Jira.');
                 return;
             }
 
-            // Поля
+            // Извлекаем поля
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
-            // Экранируем HTML
+            // Экранируем "опасные" символы HTML
             const safeSummary = escapeHtml(summary);
             const safeDescription = escapeHtml(fullDescription);
             const safeTitle = escapeHtml(task.title);
 
-            // Проверяем маркер expanded:true
+            // Проверяем, есть ли "(expanded:true)" в текущем тексте
             const currentText = ctx.callbackQuery.message?.text || '';
-            const isExpanded = currentText.includes('expanded:true');
+            const isExpanded = currentText.includes('(expanded:true)');
 
             if (!isExpanded) {
-                // ---------- РАЗВОРАЧИВАЕМ ----------
-                // Добавим "expanded:true" в текст (скрытый маркер, например комментарий)
-                // \n<!-- expanded:true -->
+                // ---------- Разворачиваем ----------
+                // Сформируем "развёрнутый" текст, добавим маркер (expanded:true)
                 const expandedText =
                     `<b>Задача:</b> ${task.id}\n` +
                     `<b>Источник:</b> ${task.source}\n` +
                     `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
                     `<b>Тип:</b> ${task.issueType}\n` +
                     `<b>Заголовок:</b> ${safeSummary}\n\n` +
-                    `<b>Описание:</b> ${safeDescription}\n` +
-                    `<!-- expanded:true -->`; // наш маркер
+                    `<b>Описание:</b> ${safeDescription}\n\n` +
+                    `(expanded:true)`;  // Маркер состояния
 
-                // Готовим кнопки: "Скрыть"
+                // Кнопки: "Скрыть" и "Открыть в Jira"
                 const keyboard = new InlineKeyboard()
                     .text('Скрыть', `toggle_description:${task.id}`)
                     .url('Открыть в Jira', taskUrl);
 
-                // Скачиваем вложения
+                // Скачиваем вложения, если нужно
                 const attachments = issue.fields.attachment || [];
                 let counter = 1;
                 for (const att of attachments) {
@@ -616,7 +614,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                         });
 
                         let originalFilename = att.filename || 'file.bin';
-                        // "чистим" имя
+                        // "Чистим" имя
                         originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
 
                         const finalName = `${uuidv4()}_${originalFilename}`;
@@ -631,14 +629,15 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     }
                 }
 
+                // Редактируем сообщение
                 await ctx.editMessageText(expandedText, {
                     parse_mode: 'HTML',
                     reply_markup: keyboard
                 });
 
             } else {
-                // ---------- СВЁРТЫВАЕМ ----------
-                // Удалим описание, поставим "expanded:false"
+                // ---------- Сворачиваем ----------
+                // Сформируем "свёрнутый" текст, укажем "(expanded:false)"
                 const collapsedText =
                     `<b>Задача:</b> ${task.id}\n` +
                     `<b>Источник:</b> ${task.source}\n` +
@@ -646,7 +645,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     `<b>Описание:</b> ${safeTitle}\n` +
                     `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
                     `<b>Тип задачи:</b> ${task.issueType}\n` +
-                    `<!-- expanded:false -->`; // маркер
+                    `(expanded:false)`; // Маркер
 
                 const keyboard = new InlineKeyboard();
                 if (task.department === "Техническая поддержка") {
@@ -660,6 +659,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                         .text('Подробнее', `toggle_description:${task.id}`);
                 }
 
+                // Возвращаем свёрнутый вид
                 await ctx.editMessageText(collapsedText, {
                     parse_mode: 'HTML',
                     reply_markup: keyboard
