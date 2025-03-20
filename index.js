@@ -553,7 +553,7 @@ function parseCustomMarkdown(text) {
     text = convertCodeBlocks(text);
 
     return text
-        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **Жирный**
+        .replace(/\*(.*?)\*/g, '<b>$1</b>')  // **Жирный**
         .replace(/_(.*?)_/g, '<i>$1</i>')      // _Курсив_
         .replace(/__(.*?)__/g, '<u>$1</u>')      // __Подчеркнутый__
         .replace(/~~(.*?)~~/g, '<s>$1</s>')      // ~~Зачеркнутый~~
