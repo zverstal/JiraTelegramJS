@@ -575,11 +575,11 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     .replace(/&/g, "&amp;");
 
                 const expandedText = 
-                    `<b>Задача:</b> <a href="${taskUrl}">${task.id}</a><br/>` +
-                    `<b>Источник:</b> ${task.source}<br/>` +
-                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}<br/>` +
-                    `<b>Тип:</b> ${task.issueType}<br/>` +
-                    `<b>Заголовок:</b> ${safeSummary}<br/><br/>` +
+                    `<b>Задача:</b> <a href="${taskUrl}">${task.id}</a><br>` +
+                    `<b>Источник:</b> ${task.source}<br>` +
+                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}<br>` +
+                    `<b>Тип:</b> ${task.issueType}<br>` +
+                    `<b>Заголовок:</b> ${safeSummary}<br><br>` +
                     `<b>Описание:</b> ${safeDescription}`;
 
                 const keyboard = new InlineKeyboard()
@@ -636,11 +636,11 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     .replace(/&/g, "&amp;");
 
                 const collapsedText = 
-                    `<b>Задача:</b> ${task.id}<br/>` +
-                    `<b>Источник:</b> ${task.source}<br/>` +
-                    `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a><br/>` +
-                    `<b>Описание:</b> ${safeTitle}<br/>` +
-                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}<br/>` +
+                    `<b>Задача:</b> ${task.id}<br>` +
+                    `<b>Источник:</b> ${task.source}<br>` +
+                    `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a><br>` +
+                    `<b>Описание:</b> ${safeTitle}<br>` +
+                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}<br>` +
                     `<b>Тип задачи:</b> ${task.issueType}`;
 
                 const keyboard = new InlineKeyboard();
