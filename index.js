@@ -532,11 +532,9 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // Обработчик кнопки "Подробнее/Скрыть"
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
-        // Обязательно отвечаем на колбэк
         await ctx.answerCallbackQuery();
         const taskId = ctx.match[1];
 
-        // Ищем задачу в локальной БД
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err || !task) {
                 console.error('Ошибка при получении задачи:', err);
@@ -544,44 +542,55 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Получаем из Jira полные данные: summary, description, attachment
+            // Получаем данные задачи из Jira
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
                 await ctx.reply('Не удалось загрузить данные из Jira.');
                 return;
             }
 
-            // Достаём поля задачи
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
             // Проверяем, развернуто ли
-            const isExpanded = ctx.callbackQuery.message?.text?.includes(fullDescription.substring(0, 20));
+            const isExpanded = ctx.callbackQuery.message?.text?.includes(summary.substring(0, 10));
 
             if (!isExpanded) {
-                // ---------- РАЗВОРАЧИВАЕМ ----------
-                const expandedText =
-                    `Задача: [${task.id}](${taskUrl})\n` +
-                    `Источник: ${task.source}\n` +
-                    `Приоритет: ${priorityEmoji} ${task.priority}\n` +
-                    `Тип: ${task.issueType}\n` +
-                    `Заголовок: ${summary}\n\n` +
-                    `Описание: ${fullDescription}`;
+                // ----------- Разворачиваем -----------
+                // HTML-текст
+                // Обратите внимание: < и > в issue.fields.description/summary потенциально нужно экранировать!
+                // Если в тексте реально встречаются <, >, &, сделайте .replace().
 
-                // Кнопки: "Скрыть", "Открыть в Jira"
+                // Пример простой экранировки в функции (или inline)
+                const safeSummary = summary
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/&/g, "&amp;");
+
+                const safeDescription = fullDescription
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/&/g, "&amp;");
+
+                const expandedText = 
+                    `<b>Задача:</b> <a href="${taskUrl}">${task.id}</a><br/>` +
+                    `<b>Источник:</b> ${task.source}<br/>` +
+                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}<br/>` +
+                    `<b>Тип:</b> ${task.issueType}<br/>` +
+                    `<b>Заголовок:</b> ${safeSummary}<br/><br/>` +
+                    `<b>Описание:</b> ${safeDescription}`;
+
                 const keyboard = new InlineKeyboard()
                     .text('Скрыть', `toggle_description:${task.id}`)
                     .url('Открыть в Jira', taskUrl);
 
-                // Скачиваем вложения, сохраняем на сервер, добавляем кнопки-ссылки
+                // Скачиваем вложения, формируем ссылки
                 const attachments = issue.fields.attachment || [];
                 let counter = 1;
-
                 for (const att of attachments) {
                     try {
-                        // Скачиваем файл (buffer) из Jira
                         const fileResp = await axios.get(att.content, {
                             responseType: 'arraybuffer',
                             headers: {
@@ -593,49 +602,47 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                             }
                         });
 
-                        // Исходное имя файла или "file.bin"
-                        const originalFilename = att.filename || "file.bin";
-                        // Удаляем «опасные» символы
-                        const sanitized = originalFilename.replace(/[^\w.\-]/g, "_");
-                        // Ограничиваем длину (например, 100 символов)
-                        const shortName = sanitized.substring(0, 100);
+                        // Исходное имя файла (санитизируем при необходимости)
+                        let originalFilename = att.filename || 'file.bin';
+                        originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
 
-                        // Добавляем UUID, чтобы имя было уникальным
-                        const finalName = `${uuidv4()}_${shortName}`;
+                        // Уникальное имя
+                        const finalName = `${uuidv4()}_${originalFilename}`;
                         const filePath = path.join(ATTACHMENTS_DIR, finalName);
-
-                        // Записываем файл на диск
                         fs.writeFileSync(filePath, fileResp.data);
 
-                        // Формируем публичный URL (через PUBLIC_BASE_URL)
                         const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
 
-                        // Добавляем кнопку
                         keyboard.row().url(`Вложение #${counter}`, publicUrl);
                         counter++;
-
                     } catch (downloadErr) {
-                        console.error('Ошибка при скачивании вложения:', downloadErr);
+                        console.error('Ошибка скачивания:', downloadErr);
                     }
                 }
 
-                // Редактируем сообщение, вставляя подробный текст + кнопки
+                // Редактируем сообщение
                 await ctx.editMessageText(expandedText, {
-                    parse_mode: 'Markdown',
+                    parse_mode: 'HTML',
                     reply_markup: keyboard
                 });
 
             } else {
-                // ---------- СВЁРТЫВАЕМ ----------
-                const collapsedText =
-                    `Задача: ${task.id}\n` +
-                    `Источник: ${task.source}\n` +
-                    `Ссылка: ${taskUrl}\n` +
-                    `Описание: ${task.title}\n` +
-                    `Приоритет: ${priorityEmoji} ${task.priority}\n` +
-                    `Тип задачи: ${task.issueType}`;
+                // ----------- Сворачиваем -----------
+                // Также формируем HTML-текст
+                // Нужно учитывать, что < и > тоже могут встретиться в task.title
+                const safeTitle = task.title
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/&/g, "&amp;");
 
-                // Восстанавливаем кнопки "Взять в работу" / "Подробнее"
+                const collapsedText = 
+                    `<b>Задача:</b> ${task.id}<br/>` +
+                    `<b>Источник:</b> ${task.source}<br/>` +
+                    `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a><br/>` +
+                    `<b>Описание:</b> ${safeTitle}<br/>` +
+                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}<br/>` +
+                    `<b>Тип задачи:</b> ${task.issueType}`;
+
                 const keyboard = new InlineKeyboard();
                 if (task.department === "Техническая поддержка") {
                     keyboard
@@ -649,13 +656,13 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 }
 
                 await ctx.editMessageText(collapsedText, {
-                    parse_mode: 'Markdown',
+                    parse_mode: 'HTML',
                     reply_markup: keyboard
                 });
             }
         });
     } catch (error) {
-        console.error('Ошибка при обработке toggle_description:', error);
+        console.error('Ошибка:', error);
         await ctx.reply('Произошла ошибка.');
     }
 });
