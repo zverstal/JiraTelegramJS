@@ -535,25 +535,27 @@ function escapeHtml(text) {
 }
 
 // Функция обработки блоков кода
-function convertCodeBlocks(rawText) {
-    return rawText
-        .replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (match, lang, codeContent) => {
-            const safeCode = escapeHtml(codeContent);
-            return `<pre><code class="language-${lang}">${safeCode}</code></pre>`;
+function convertCodeBlocks(text) {
+    return text
+        .replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (match, lang, code) => {
+            return `<pre><code class="language-${lang}">${escapeHtml(code.trim())}</code></pre>`;
         })
-        .replace(/\{code\}([\s\S]*?)\{code\}/g, (match, codeContent) => {
-            const safeCode = escapeHtml(codeContent);
-            return `<pre><code>${safeCode}</code></pre>`;
+        .replace(/\{code\}([\s\S]*?)\{code\}/g, (match, code) => {
+            return `<pre><code>${escapeHtml(code.trim())}</code></pre>`;
         });
 }
 
-// Функция минимальной обработки Markdown
+// Функция парсинга Markdown в HTML (Telegram-совместимая версия)
 function parseCustomMarkdown(text) {
     if (!text) return '';
 
+    // Сначала обрабатываем блоки кода
+    text = convertCodeBlocks(text);
+
+    // Обрабатываем остальные элементы Markdown
     return text
         .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **Жирный**
-        .replace(/\b\*(.*?)\*\b/g, '<b>$1</b>')  // *Жирный* (по краям слова)
+        .replace(/\b\*(.*?)\*\b/g, '<b>$1</b>')  // *Жирный* (если по краям слова)
         .replace(/__(.*?)__/g, '<u>$1</u>')      // __Подчеркнутый__
         .replace(/_([^_]+)_/g, '<i>$1</i>')      // _Курсив_
         .replace(/~~(.*?)~~/g, '<s>$1</s>')      // ~~Зачеркнутый~~
@@ -561,11 +563,13 @@ function parseCustomMarkdown(text) {
         .replace(/^\-\s(.*)/gm, '• $1')         // - Маркерный список
         .replace(/^\*\s(.*)/gm, '• $1')         // * Альтернативный маркерный список
         .replace(/^\d+\.\s(.*)/gm, '🔹 $1')     // 1. Нумерованный список
-        .replace(/\|\|(.+?)\|\|/g, (match, content) => { // Таблицы
-            const cells = content.split('||').map(cell => cell.trim());
-            return cells.map((cell, index) => (index === 0 ? `<b>${cell}</b>` : cell)).join(' | ');
-        })
+        .replace(/\|\|(.+?)\|\|/g, '<tg-spoiler>$1</tg-spoiler>') // Спойлер
         .replace(/\n{3,}/g, '\n\n');            // Убираем лишние \n\n\n
+}
+
+// Функция обработки описания
+function formatDescriptionAsHtml(rawDescription) {
+    return parseCustomMarkdown(rawDescription || '');
 }
 
 // Функция обработки описания
