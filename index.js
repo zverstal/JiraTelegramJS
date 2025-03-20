@@ -558,58 +558,66 @@ function formatDescriptionAsHtml(rawDescription) {
 // Обработчик кнопки "Подробнее / Скрыть"
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
+        // 1) Подтверждаем колбэк (обязательно для Telegram API)
         await ctx.answerCallbackQuery();
         const taskId = ctx.match[1];
 
+        // 2) Достаем задачу из базы данных
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
-            if (err || !task) {
-                console.error('Ошибка при получении задачи:', err);
+            if (err) {
+                console.error('Ошибка при получении задачи из базы:', err);
                 await ctx.reply('Произошла ошибка.');
                 return;
             }
+            if (!task) {
+                await ctx.reply('Задача не найдена.');
+                return;
+            }
 
-            // Загружаем детальные данные задачи из Jira
+            // 3) Загружаем детальные поля из Jira
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
                 await ctx.reply('Не удалось загрузить данные из Jira.');
                 return;
             }
 
+            // 4) Извлекаем данные
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
-            const expandedMarker = "  ";  // Два пробела – развернутое состояние
-            const collapsedMarker = ".";  // Один пробел – свернутое состояние
-
+            // 5) Экранируем текст
             const safeSummary = escapeHtml(summary);
+            const safeDescription = formatDescriptionAsHtml(fullDescription);
             const safeTitle = escapeHtml(task.title);
-            const fancyDescription = formatDescriptionAsHtml(fullDescription);
 
-            // Проверяем текущее состояние сообщения
+            // 6) Определяем текущее состояние (раскрыто или скрыто)
             const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
-            const isExpanded = currentText.endsWith(expandedMarker);
+            const isExpanded = currentText.endsWith("...");
 
             if (!isExpanded) {
-                // ---------- Разворачиваем ----------
+                // ---------- РАЗВОРАЧИВАЕМ ----------
                 const expandedText =
                     `<b>Задача:</b> ${task.id}\n` +
                     `<b>Источник:</b> ${task.source}\n` +
                     `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
                     `<b>Тип:</b> ${task.issueType}\n` +
                     `<b>Заголовок:</b> ${safeSummary}\n\n` +
-                    `<b>Описание:</b>\n${fancyDescription}\n\n` +
-                    expandedMarker;
-
+                    `<b>Описание:</b>\n${safeDescription}\n\n` +
+                    `...`; // маркер раскрытого состояния
+                
+                // Создаем кнопки: "Скрыть" + "Открыть в Jira"
                 const keyboard = new InlineKeyboard()
                     .text('Скрыть', `toggle_description:${task.id}`)
                     .url('Открыть в Jira', taskUrl);
 
+                // 7) Обрабатываем вложения
                 const attachments = issue.fields.attachment || [];
                 let counter = 1;
                 for (const att of attachments) {
                     try {
+                        // Скачиваем файл
                         const fileResp = await axios.get(att.content, {
                             responseType: 'arraybuffer',
                             headers: {
@@ -621,13 +629,17 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                             }
                         });
 
+                        // Обрабатываем имя файла
                         let originalFilename = att.filename || 'file.bin';
                         originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
                         const finalName = `${uuidv4()}_${originalFilename}`;
                         const filePath = path.join(ATTACHMENTS_DIR, finalName);
                         fs.writeFileSync(filePath, fileResp.data);
 
+                        // Создаем URL вложения
                         const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
+
+                        // Добавляем кнопку
                         keyboard.row().url(`Вложение #${counter}`, publicUrl);
                         counter++;
                     } catch (errAttach) {
@@ -635,13 +647,14 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     }
                 }
 
+                // 8) Редактируем сообщение
                 await ctx.editMessageText(expandedText, {
                     parse_mode: 'HTML',
                     reply_markup: keyboard
                 });
 
             } else {
-                // ---------- Сворачиваем ----------
+                // ---------- СВЕРНУТЬ ----------
                 const collapsedText =
                     `<b>Задача:</b> ${task.id}\n` +
                     `<b>Источник:</b> ${task.source}\n` +
@@ -649,8 +662,9 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     `<b>Описание:</b> ${safeTitle}\n` +
                     `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
                     `<b>Тип задачи:</b> ${task.issueType}\n` +
-                    collapsedMarker;
+                    `.`; // маркер свернутого состояния
 
+                // Создаем кнопки: "Взять в работу" + "Подробнее"
                 const keyboard = new InlineKeyboard();
                 if (task.department === "Техническая поддержка") {
                     keyboard
@@ -663,6 +677,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                         .text('Подробнее', `toggle_description:${task.id}`);
                 }
 
+                // 9) Редактируем сообщение
                 await ctx.editMessageText(collapsedText, {
                     parse_mode: 'HTML',
                     reply_markup: keyboard
