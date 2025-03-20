@@ -527,6 +527,8 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 }
 
 // ----------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------------
+// Функция экранирования HTML
 function escapeHtml(text) {
     return text
         .replace(/&/g, '&amp;')
@@ -534,30 +536,43 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
+// Функция обработки блоков кода ({code:язык} ... {code} и {code} ... {code})
+function convertCodeBlocks(text) {
+    return text
+        .replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (match, lang, code) => {
+            code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1')); // Убираем спойлеры
+            return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
+        })
+        .replace(/\{code\}([\s\S]*?)\{code\}/g, (match, code) => {
+            code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1'));
+            return `<pre><code>${code.trim()}</code></pre>`;
+        });
+}
+
 // Функция преобразования Telegram Markdown в HTML
 function parseCustomMarkdown(text) {
     if (!text) return '';
 
-    // Обрабатываем блоки кода (```...```)
-    text = text.replace(/```([\s\S]*?)```/g, (match, code) => {
-        code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1')); // Убираем спойлеры внутри кода
-        return `<pre><code>${code}</code></pre>`;
-    });
+    // Обрабатываем код перед Markdown
+    text = convertCodeBlocks(text);
 
-    // Обрабатываем остальной текст (жирный, курсив, списки)
     return text
         .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **Жирный**
         .replace(/\*(.*?)\*/g, '<i>$1</i>')      // *Курсив*
         .replace(/__(.*?)__/g, '<u>$1</u>')      // __Подчеркнутый__
         .replace(/~~(.*?)~~/g, '<s>$1</s>')      // ~~Зачеркнутый~~
-        .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') // `Инлайн-код` (только если не внутри блока кода)
-        .replace(/^\-\s(.*)/gm, '• $1')          // - Маркерный список
-        .replace(/^\d+\.\s(.*)/gm, '🔹 $1')      // 1. Нумерованный список
-        .replace(/\|\|([^|]+)\|\|/g, '<tg-spoiler>$1</tg-spoiler>'); // Спойлер
+        .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') // `Инлайн-код`
+        .replace(/^\-\s(.*)/gm, '• $1')         // - Маркерный список
+        .replace(/^\d+\.\s(.*)/gm, '🔹 $1')     // 1. Нумерованный список
+        .replace(/\|\|([^|]+)\|\|/g, '<tg-spoiler>$1</tg-spoiler>') // Спойлер
+        .replace(/\|(.+?)\|/g, (match, content) => { // Таблицы
+            const cells = content.split('|').map(cell => cell.trim());
+            return cells.map((cell, index) => (index === 0 ? `<b>${cell}</b>` : cell)).join(' | ');
+        });
 }
 
 // Функция обработки описания
-    function formatDescriptionAsHtml(rawDescription) {
+function formatDescriptionAsHtml(rawDescription) {
     return parseCustomMarkdown(rawDescription || '');
 }
 
