@@ -596,88 +596,91 @@ function formatDescriptionAsHtml(rawDescription) {
     return parseCustomMarkdown(rawDescription || '');
 }
 
-// Обработчик кнопки "Подробнее / Скрыть"
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
         await ctx.answerCallbackQuery();
         const taskId = ctx.match[1];
 
-        db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
+        // Сначала ищем задачу в базе, чтобы узнать её источник
+        db.get('SELECT source FROM tasks WHERE id = ?', [taskId], async (err, row) => {
             if (err) {
-                console.error('Ошибка при получении задачи из базы:', err);
-                await ctx.reply('Произошла ошибка.');
-                return;
+                console.error('Ошибка при получении задачи из БД:', err);
+                return ctx.reply('Ошибка при поиске задачи.');
             }
 
-            if (!task) {
-                console.log(`Задача ${taskId} не найдена в БД, запрашиваем Jira API...`);
-                task = await getJiraTaskDetails('sxl', taskId) || await getJiraTaskDetails('betone', taskId);
-                if (!task) {
-                    await ctx.reply('Не удалось загрузить данные из Jira.');
-                    return;
-                }
+            let source = row?.source;
+
+            // Если задачи нет в БД, пытаемся сначала в sxl, потом в betone
+            let taskDetails = await getJiraTaskDetails(source || 'sxl', taskId);
+            if (!taskDetails && !source) {
+                taskDetails = await getJiraTaskDetails('betone', taskId);
+                source = taskDetails ? 'betone' : null;
             }
 
-            const summary = task.title || 'Нет заголовка';
-            const fullDescription = task.description || 'Нет описания';
-            const priorityEmoji = getPriorityEmoji(task.priority);
-            const taskUrl = getTaskUrl(task.source, task.id);
-            const safeDescription = formatDescriptionAsHtml(fullDescription);
-            const safeTitle = escapeHtml(task.title);
+            if (!taskDetails) {
+                return ctx.reply('Не удалось загрузить данные задачи из Jira.');
+            }
 
-            db.get('SELECT * FROM user_actions WHERE taskId = ? AND action = "take_task" ORDER BY timestamp DESC LIMIT 1', [taskId], async (err, user) => {
-                if (err) {
-                    console.error('Ошибка при получении пользователя:', err);
-                    return ctx.reply('Произошла ошибка.');
+            const title = taskDetails.fields.summary || 'Нет заголовка';
+            const description = taskDetails.fields.description || 'Нет описания';
+            const priority = taskDetails.fields.priority?.name || 'Не указан';
+            const priorityEmoji = getPriorityEmoji(priority);
+            const issueType = taskDetails.fields.issuetype?.name || 'Не указан';
+            const taskUrl = getTaskUrl(source, taskId);
+            const safeDescription = formatDescriptionAsHtml(description);
+            const safeTitle = escapeHtml(title);
+
+            const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
+            const isExpanded = currentText.endsWith("...");
+
+            if (!isExpanded) {
+                // Разворачиваем описание с вложениями
+                let attachmentLinks = '';
+                if (taskDetails.fields.attachment && taskDetails.fields.attachment.length > 0) {
+                    attachmentLinks = taskDetails.fields.attachment.map(att => {
+                        return `<a href="${att.content}">${escapeHtml(att.filename)}</a>`;
+                    }).join('\n');
                 }
-            
-                const isTaken = !!user; // Проверяем, есть ли запись о взятии задачи
-                const takenBy = isTaken ? usernameMappings[user.username] || user.username : 'Никто';
-            
-                const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
-                const isExpanded = currentText.endsWith("...");
-            
-                if (!isExpanded) {
-                    const expandedText = `
-            <b>Задача:</b> ${task.id}
-            <b>Источник:</b> ${task.source}
-            <b>Приоритет:</b> ${priorityEmoji} ${task.priority}
-            <b>Тип:</b> ${task.issueType}
-            <b>Заголовок:</b> ${summary}
-            
-            <b>Описание:</b>
-            ${safeDescription}
-            
-            ...`;
-            
-                    const keyboard = new InlineKeyboard()
-                        .text('Скрыть', `toggle_description:${task.id}`)
-                        .url('Открыть в Jira', taskUrl);
-            
-                    await ctx.editMessageText(expandedText, { parse_mode: 'HTML', reply_markup: keyboard });
-                } else {
-                    const collapsedText = `
-            <b>Задача:</b> ${task.id}
-            <b>Источник:</b> ${task.source}
-            <b>Приоритет:</b> ${priorityEmoji} ${task.priority}
-            <b>Заголовок:</b> ${safeTitle}
-            <b>Взята в работу:</b> ${takenBy}
-            `;
-            
-                    const keyboard = new InlineKeyboard()
-                        .text('Подробнее', `toggle_description:${task.id}`)
-                        .url('Перейти к задаче', taskUrl);
-            
-                    await ctx.editMessageText(collapsedText, { parse_mode: 'HTML', reply_markup: keyboard });
-                }
-            });
+
+                const expandedText = `
+<b>Задача:</b> ${taskId}
+<b>Источник:</b> ${source}
+<b>Приоритет:</b> ${priorityEmoji} ${priority}
+<b>Тип:</b> ${issueType}
+<b>Заголовок:</b> ${safeTitle}
+
+<b>Описание:</b>
+${safeDescription}
+
+${attachmentLinks ? `<b>Вложения:</b>\n${attachmentLinks}` : ''}
+...`;
+
+                const keyboard = new InlineKeyboard()
+                    .text('Скрыть', `toggle_description:${taskId}`)
+                    .url('Открыть в Jira', taskUrl);
+
+                await ctx.editMessageText(expandedText, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: keyboard });
+            } else {
+                // Сворачиваем описание
+                const keyboard = new InlineKeyboard()
+                    .text('Подробнее', `toggle_description:${taskId}`)
+                    .url('Перейти к задаче', taskUrl);
+
+                const collapsedText = `
+<b>Задача:</b> ${taskId}
+<b>Источник:</b> ${source}
+<b>Приоритет:</b> ${priorityEmoji} ${priority}
+<b>Заголовок:</b> ${safeTitle}
+`;
+
+                await ctx.editMessageText(collapsedText, { parse_mode: 'HTML', reply_markup: keyboard });
+            }
         });
     } catch (error) {
-        console.error('Ошибка в обработчике toggle_description:', error);
+        console.error('Ошибка в toggle_description:', error);
         await ctx.reply('Произошла ошибка при обработке вашего запроса.');
     }
 });
-
 
 
 // ----------------------------------------------------------------------------------
