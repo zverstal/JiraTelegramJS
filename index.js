@@ -662,7 +662,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     `<b>Описание:</b> ${safeTitle}\n` +
                     `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
                     `<b>Тип задачи:</b> ${task.issueType}\n` +
-                    `.`; // маркер свернутого состояния
+                    ` `; // маркер свернутого состояния
 
                 // Создаем кнопки: "Взять в работу" + "Подробнее"
                 const keyboard = new InlineKeyboard();
