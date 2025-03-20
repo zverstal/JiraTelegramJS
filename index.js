@@ -532,9 +532,11 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // Обработчик кнопки "Подробнее/Скрыть"
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
+        // Обязательно отвечаем на колбэк
         await ctx.answerCallbackQuery();
         const taskId = ctx.match[1];
 
+        // Ищем задачу в локальной БД
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err || !task) {
                 console.error('Ошибка при получении задачи:', err);
@@ -542,37 +544,36 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Получаем данные задачи из Jira
+            // Получаем из Jira полные данные: summary, description, attachment
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
                 await ctx.reply('Не удалось загрузить данные из Jira.');
                 return;
             }
 
+            // Достаём поля задачи
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
             // Проверяем, развернуто ли
+            // (можно проверять по summary.substring, или любой другой признак)
             const isExpanded = ctx.callbackQuery.message?.text?.includes(summary.substring(0, 10));
+
+            // Функция для экранирования опасных символов
+            // (иначе <, >, & сломают HTML)
+            function escapeHtml(text) {
+                return text
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;");
+            }
 
             if (!isExpanded) {
                 // ----------- Разворачиваем -----------
-                // HTML-текст
-                // Обратите внимание: < и > в issue.fields.description/summary потенциально нужно экранировать!
-                // Если в тексте реально встречаются <, >, &, сделайте .replace().
-
-                // Пример простой экранировки в функции (или inline)
-                const safeSummary = summary
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;")
-                    .replace(/&/g, "&amp;");
-
-                const safeDescription = fullDescription
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;")
-                    .replace(/&/g, "&amp;");
+                const safeSummary = escapeHtml(summary);
+                const safeDescription = escapeHtml(fullDescription);
 
                 const expandedText = 
                     `<b>Задача:</b> <a href="${taskUrl}">${task.id}</a><br>` +
@@ -586,11 +587,13 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     .text('Скрыть', `toggle_description:${task.id}`)
                     .url('Открыть в Jira', taskUrl);
 
-                // Скачиваем вложения, формируем ссылки
+                // Скачиваем вложения, сохраняем на сервер, добавляем кнопки-ссылки
                 const attachments = issue.fields.attachment || [];
                 let counter = 1;
+
                 for (const att of attachments) {
                     try {
+                        // Скачиваем файл (buffer) из Jira
                         const fileResp = await axios.get(att.content, {
                             responseType: 'arraybuffer',
                             headers: {
@@ -602,11 +605,11 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                             }
                         });
 
-                        // Исходное имя файла (санитизируем при необходимости)
-                        let originalFilename = att.filename || 'file.bin';
-                        originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
+                        // Исходное имя файла
+                        let originalFilename = att.filename || "file.bin";
+                        originalFilename = originalFilename.replace(/[^\w.\-]/g, "_").substring(0, 100);
 
-                        // Уникальное имя
+                        // Добавляем UUID, чтобы имя было уникальным
                         const finalName = `${uuidv4()}_${originalFilename}`;
                         const filePath = path.join(ATTACHMENTS_DIR, finalName);
                         fs.writeFileSync(filePath, fileResp.data);
@@ -616,11 +619,11 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                         keyboard.row().url(`Вложение #${counter}`, publicUrl);
                         counter++;
                     } catch (downloadErr) {
-                        console.error('Ошибка скачивания:', downloadErr);
+                        console.error('Ошибка скачивания вложения:', downloadErr);
                     }
                 }
 
-                // Редактируем сообщение
+                // Редактируем сообщение (HTML + кнопки)
                 await ctx.editMessageText(expandedText, {
                     parse_mode: 'HTML',
                     reply_markup: keyboard
@@ -628,12 +631,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
 
             } else {
                 // ----------- Сворачиваем -----------
-                // Также формируем HTML-текст
-                // Нужно учитывать, что < и > тоже могут встретиться в task.title
-                const safeTitle = task.title
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;")
-                    .replace(/&/g, "&amp;");
+                const safeTitle = escapeHtml(task.title);
 
                 const collapsedText = 
                     `<b>Задача:</b> ${task.id}<br>` +
@@ -662,78 +660,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             }
         });
     } catch (error) {
-        console.error('Ошибка:', error);
+        console.error('Ошибка при обработке toggle_description:', error);
         await ctx.reply('Произошла ошибка.');
-    }
-});
-
-// ----------------------------------------------------------------------------------
-// 9) ИНТЕГРАЦИЯ С CONFLUENCE (ДЕЖУРНЫЙ)
-// ----------------------------------------------------------------------------------
-async function fetchDutyEngineer() {
-    try {
-        const pageId = '3539406'; // пример
-        const token = process.env.CONFLUENCE_API_TOKEN;
-
-        const resp = await axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/json'
-            }
-        });
-
-        const html = resp.data?.body?.view?.value;
-        if (!html) {
-            console.log('Не удалось получить HTML из body.view.value');
-            return 'Не найдено';
-        }
-
-        const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
-        const schedule = [];
-        let match;
-        while ((match = rowRegex.exec(html)) !== null) {
-            schedule.push({
-                index: match[1],
-                range: match[2],
-                name: match[3].trim()
-            });
-        }
-
-        if (schedule.length === 0) {
-            console.log('Не удалось извлечь расписание дежурств из HTML.');
-            return 'Не найдено';
-        }
-
-        const nowStr = getMoscowTimestamp();
-        const today = DateTime.fromFormat(nowStr, 'yyyy-MM-dd HH:mm:ss');
-
-        for (const item of schedule) {
-            const [startStr, endStr] = item.range.split('-');
-            const [startDay, startMonth] = startStr.split('.');
-            const [endDay, endMonth] = endStr.split('.');
-            const year = 2025; // пример
-
-            const startDate = DateTime.fromObject({ year, month: +startMonth, day: +startDay });
-            const endDate = DateTime.fromObject({ year, month: +endMonth, day: +endDay });
-
-            if (today >= startDate && today <= endDate) {
-                return item.name;
-            }
-        }
-        return 'Не найдено';
-    } catch (error) {
-        console.error('Ошибка при запросе к Confluence:', error);
-        throw error;
-    }
-}
-
-bot.command('duty', async (ctx) => {
-    try {
-        const engineer = await fetchDutyEngineer();
-        await ctx.reply(`Дежурный: ${engineer}`);
-    } catch (err) {
-        console.error('Ошибка duty:', err);
-        await ctx.reply('Произошла ошибка при запросе дежурного.');
     }
 });
 
