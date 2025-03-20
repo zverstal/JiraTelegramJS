@@ -549,6 +549,7 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 
 // Функция экранирования HTML
 function escapeHtml(text) {
+    if (!text) return '';
     return text
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
