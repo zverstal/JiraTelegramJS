@@ -605,7 +605,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
 
                         // Формируем публичный URL: (например, http://server_ip:3000/attachments/<fileName>)
                         // Вставьте свой домен/IP
-                        const publicUrl = `http://YOUR_DOMAIN_OR_IP:${PORT}/attachments/${fileName}`;
+                        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${fileName}`;
 
                         // Добавляем кнопку
                         keyboard.row().url(`Вложение #${counter}`, publicUrl);
