@@ -529,11 +529,14 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // ----------------------------------------------------------------------------------
 // 8) КНОПКА "ПОДРОБНЕЕ" / "СКРЫТЬ", С СОХРАНЕНИЕМ ВЛОЖЕНИЙ НА СЕРВЕРЕ
 // ----------------------------------------------------------------------------------
+// Обработчик кнопки "Подробнее/Скрыть"
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
+        // Обязательно отвечаем на колбэк
         await ctx.answerCallbackQuery();
         const taskId = ctx.match[1];
 
+        // Ищем задачу в локальной БД
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err || !task) {
                 console.error('Ошибка при получении задачи:', err);
@@ -541,13 +544,14 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Получаем полные данные из Jira
+            // Получаем из Jira полные данные: summary, description, attachment
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
                 await ctx.reply('Не удалось загрузить данные из Jira.');
                 return;
             }
 
+            // Достаём поля задачи
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
@@ -557,7 +561,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             const isExpanded = ctx.callbackQuery.message?.text?.includes(fullDescription.substring(0, 20));
 
             if (!isExpanded) {
-                // ----- РАЗВОРАЧИВАЕМ -----
+                // ---------- РАЗВОРАЧИВАЕМ ----------
                 const expandedText =
                     `Задача: [${task.id}](${taskUrl})\n` +
                     `Источник: ${task.source}\n` +
@@ -566,20 +570,18 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     `Заголовок: ${summary}\n\n` +
                     `Описание: ${fullDescription}`;
 
-                // Генерируем кнопки: "Скрыть" и вложения (через наш сервер)
+                // Кнопки: "Скрыть", "Открыть в Jira"
                 const keyboard = new InlineKeyboard()
-                    .text('Скрыть', `toggle_description:${task.id}`);
+                    .text('Скрыть', `toggle_description:${task.id}`)
+                    .url('Открыть в Jira', taskUrl);
 
-                // Ссылку "Открыть в Jira"
-                keyboard.url('Открыть в Jira', taskUrl);
-
-                // СКАЧИВАЕМ вложения у Jira, сохраняем, генерируем ссылки
+                // Скачиваем вложения, сохраняем на сервер, добавляем кнопки-ссылки
                 const attachments = issue.fields.attachment || [];
                 let counter = 1;
 
                 for (const att of attachments) {
                     try {
-                        // Скачиваем
+                        // Скачиваем файл (buffer) из Jira
                         const fileResp = await axios.get(att.content, {
                             responseType: 'arraybuffer',
                             headers: {
@@ -591,37 +593,40 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                             }
                         });
 
-                        // Определяем расширение
-                        const fileExt = att.mimeType.startsWith('image/') ? '.jpg'
-                                     : att.mimeType.startsWith('video/') ? '.mp4'
-                                     : '';
+                        // Исходное имя файла или "file.bin"
+                        const originalFilename = att.filename || "file.bin";
+                        // Удаляем «опасные» символы
+                        const sanitized = originalFilename.replace(/[^\w.\-]/g, "_");
+                        // Ограничиваем длину (например, 100 символов)
+                        const shortName = sanitized.substring(0, 100);
 
-                        // Случайное имя
-                        const fileName = uuidv4() + fileExt;
-                        const filePath = path.join(ATTACHMENTS_DIR, fileName);
+                        // Добавляем UUID, чтобы имя было уникальным
+                        const finalName = `${uuidv4()}_${shortName}`;
+                        const filePath = path.join(ATTACHMENTS_DIR, finalName);
 
-                        // Сохраняем
+                        // Записываем файл на диск
                         fs.writeFileSync(filePath, fileResp.data);
 
-                        // Формируем публичный URL: (например, http://server_ip:3000/attachments/<fileName>)
-                        // Вставьте свой домен/IP
-                        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${fileName}`;
+                        // Формируем публичный URL (через PUBLIC_BASE_URL)
+                        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
 
                         // Добавляем кнопку
                         keyboard.row().url(`Вложение #${counter}`, publicUrl);
                         counter++;
+
                     } catch (downloadErr) {
                         console.error('Ошибка при скачивании вложения:', downloadErr);
                     }
                 }
 
+                // Редактируем сообщение, вставляя подробный текст + кнопки
                 await ctx.editMessageText(expandedText, {
                     parse_mode: 'Markdown',
                     reply_markup: keyboard
                 });
 
             } else {
-                // ----- СВЕРНУТЬ -----
+                // ---------- СВЁРТЫВАЕМ ----------
                 const collapsedText =
                     `Задача: ${task.id}\n` +
                     `Источник: ${task.source}\n` +
@@ -630,7 +635,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     `Приоритет: ${priorityEmoji} ${task.priority}\n` +
                     `Тип задачи: ${task.issueType}`;
 
-                let keyboard = new InlineKeyboard();
+                // Восстанавливаем кнопки "Взять в работу" / "Подробнее"
+                const keyboard = new InlineKeyboard();
                 if (task.department === "Техническая поддержка") {
                     keyboard
                         .text('Взять в работу', `take_task:${task.id}`)
