@@ -100,9 +100,9 @@ function getPriorityEmoji(priority) {
     return emojis[priority] || '';
 }
 
-// Генерация URL для Jira
-function getTaskUrl(source, taskId) {
-    return `https://jira.${source}.team/browse/${taskId}`;
+// Функция получения URL задачи в Jira
+function getTaskUrl(source, taskKey) {
+    return `https://jira.${source}.team/browse/${taskKey}`;
 }
 
 // Маппинг Telegram username → ФИО (пример)
@@ -303,9 +303,9 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
     }
 }
 
-async function getJiraTaskDetails(source, taskId) {
+async function getJiraTaskDetails(source, taskKey) {
     try {
-        const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}?fields=summary,description,attachment`;
+        const url = `https://jira.${source}.team/rest/api/2/issue/${taskKey}?fields=summary,description,attachment`;
         const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
 
         const response = await axios.get(url, {
@@ -314,9 +314,11 @@ async function getJiraTaskDetails(source, taskId) {
                 'Accept': 'application/json'
             }
         });
+
+        // ✅ Теперь корректно получаем `key`
         return response.data;
     } catch (error) {
-        console.error(`Ошибка при получении данных задачи ${taskId} из Jira (${source}):`, error);
+        console.error(`Ошибка при получении данных задачи ${taskKey} из Jira (${source}):`, error);
         return null;
     }
 }
@@ -331,40 +333,47 @@ async function sendJiraTasks(ctx) {
         (department = "Техническая поддержка" AND (lastSent IS NULL OR lastSent < date('${today}')))
         OR
         (issueType IN ('Infra', 'Office', 'Prod') AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days')))
-        ORDER BY CASE
-            WHEN department = 'Техническая поддержка' THEN 1
-            ELSE 2
-        END
+        ORDER BY 
+            CASE 
+                WHEN department = 'Техническая поддержка' THEN 1
+                ELSE 2
+            END,
+            priority DESC
     `;
 
     db.all(query, [], async (err, rows) => {
         if (err) {
-            console.error('Error fetching tasks:', err);
+            console.error('Ошибка при выборке задач:', err);
             return;
         }
 
         for (const task of rows) {
+            const taskUrl = getTaskUrl(task.source, task.id);
             const keyboard = new InlineKeyboard();
+
             if (task.department === "Техническая поддержка") {
                 keyboard
                     .text('Взять в работу', `take_task:${task.id}`)
-                    .url('Перейти к задаче', getTaskUrl(task.source, task.id))
+                    .url('Перейти к задаче', taskUrl)
                     .text('⬇ Подробнее', `toggle_description:${task.id}`);
             } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
                 keyboard
-                    .url('Перейти к задаче', getTaskUrl(task.source, task.id))
+                    .url('Перейти к задаче', taskUrl)
                     .text('⬇ Подробнее', `toggle_description:${task.id}`);
             }
 
-            const messageText =
-                `Задача: ${task.id}\n` +
-                `Источник: ${task.source}\n` +
-                `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
-                `Описание: ${task.title}\n` +
-                `Приоритет: ${getPriorityEmoji(task.priority)}\n` +
-                `Тип задачи: ${task.issueType}`;
+            const messageText = 
+                `<b>Задача:</b> ${task.id}\n` +
+                `<b>Источник:</b> ${task.source}\n` +
+                `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a>\n` +
+                `<b>Описание:</b> ${task.title}\n` +
+                `<b>Приоритет:</b> ${getPriorityEmoji(task.priority)}\n` +
+                `<b>Тип задачи:</b> ${task.issueType}`;
 
-            await ctx.reply(messageText, { reply_markup: keyboard });
+            await ctx.reply(messageText, {
+                parse_mode: 'HTML',
+                reply_markup: keyboard
+            });
 
             const moscowTimestamp = getMoscowTimestamp();
             db.run('UPDATE tasks SET lastSent = ? WHERE id = ?', [moscowTimestamp, task.id]);
