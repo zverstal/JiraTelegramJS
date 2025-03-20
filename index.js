@@ -533,21 +533,19 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 function escapeHtml(text) {
     return text
         .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')  // ✅ Правильное экранирование <
-        .replace(/>/g, '&gt;'); // ✅ Правильное экранирование >
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 }
 
-// Функция обработки блоков кода (Удаляет спойлеры ВНУТРИ кода)
+// Функция обработки блоков кода (убирает спойлеры внутри кода!)
 function convertCodeBlocks(text) {
     return text
         .replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (match, lang, code) => {
-            // Убираем спойлеры внутри блока кода
-            code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1'));
+            code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1')); // Убираем спойлеры
             return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
         })
         .replace(/\{code\}([\s\S]*?)\{code\}/g, (match, code) => {
-            // Убираем спойлеры внутри блока кода
-            code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1'));
+            code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1')); // Убираем спойлеры
             return `<pre><code>${code.trim()}</code></pre>`;
         });
 }
@@ -556,11 +554,14 @@ function convertCodeBlocks(text) {
 function parseCustomMarkdown(text) {
     if (!text) return '';
 
-    // Сначала обрабатываем спойлеры
+    // Обрабатываем спойлеры (до кода!)
     text = text.replace(/\|\|([^|]+)\|\|/g, '<tg-spoiler>$1</tg-spoiler>');
 
     // Затем обрабатываем блоки кода
     text = convertCodeBlocks(text);
+
+    // Убираем неожиданные пустые строки перед `</pre></code>`
+    text = text.replace(/<\/code><\/pre>\s+/g, '</code></pre>');
 
     // Обрабатываем остальные элементы Markdown
     return text
@@ -571,11 +572,13 @@ function parseCustomMarkdown(text) {
         .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') // `Инлайн-код`
         .replace(/^\-\s(.*)/gm, '• $1')         // - Маркерный список
         .replace(/^\d+\.\s(.*)/gm, '🔹 $1')     // 1. Нумерованный список
+        .replace(/\n{3,}/g, '\n\n')             // Убираем лишние \n\n\n
         .replace(/\|(.+?)\|/g, (match, content) => { // Таблицы
             const cells = content.split('|').map(cell => cell.trim());
             return cells.map((cell, index) => (index === 0 ? `<b>${cell}</b>` : cell)).join(' | ');
         });
 }
+
 
 // Функция обработки описания
 function formatDescriptionAsHtml(rawDescription) {
