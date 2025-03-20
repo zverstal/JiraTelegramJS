@@ -192,6 +192,25 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
     }
 }
 
+async function getJiraTaskDetails(source, taskId) {
+    try {
+        const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}?fields=summary,description,attachment`;
+        const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
+
+        const response = await axios.get(url, {
+            headers: {
+                'Authorization': `Bearer ${pat}`,
+                'Accept': 'application/json'
+            }
+        });
+
+        return response.data;
+    } catch (error) {
+        console.error(`Ошибка при получении данных задачи ${taskId} из Jira (${source}):`, error);
+        return null;
+    }
+}
+
 //---------------------------------------------------------------------
 // Отправка задач в Telegram
 //---------------------------------------------------------------------
@@ -214,9 +233,11 @@ async function sendJiraTasks(ctx) {
             if (task.department === "Техническая поддержка") {
                 keyboard.text('Взять в работу', `take_task:${task.id}`);
                 keyboard.url('Перейти к задаче', getTaskUrl(task.source, task.id));
+                keyboard.text('⬇ Подробнее', `toggle_description:${task.id}`);
             } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
                 keyboard.url('Перейти к задаче', getTaskUrl(task.source, task.id));
-            }
+                keyboard.text('⬇ Подробнее', `toggle_description:${task.id}`);
+            }            
 
             const messageText = `Задача: ${task.id}\n` +
                 `Источник: ${task.source}\n` +
@@ -441,6 +462,81 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     } catch (error) {
         console.error('Ошибка в обработчике take_task:', error);
         await ctx.reply('Произошла ошибка при обработке вашего запроса.');
+    }
+});
+
+bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
+    try {
+        await ctx.answerCallbackQuery();
+        const taskId = ctx.match[1];
+
+        db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
+            if (err || !task) {
+                console.error('Ошибка при получении задачи:', err);
+                await ctx.reply('Произошла ошибка.');
+                return;
+            }
+
+            // Получаем полное описание и вложения из Jira
+            const issue = await getJiraTaskDetails(task.source, task.id);
+            if (!issue) {
+                await ctx.reply('Ошибка загрузки данных из Jira.');
+                return;
+            }
+
+            const fullDescription = issue.fields.description || 'Нет описания';
+            const priorityEmoji = getPriorityEmoji(task.priority);
+            const taskUrl = getTaskUrl(task.source, task.id);
+
+            // Проверяем, развернуто ли описание
+            const isExpanded = ctx.message.text.includes(fullDescription.substring(0, 20));
+
+            if (!isExpanded) {
+                // Загружаем вложения (изображения, видео)
+                const attachments = issue.fields.attachment.map(att => ({
+                    type: att.mimeType.startsWith('image/') ? 'photo' : 'video',
+                    media: att.content
+                }));
+
+                const expandedText = `📌 *Задача:* [${task.id}](${taskUrl})\n` +
+                    `📍 *Источник:* ${task.source}\n` +
+                    `🔹 *Приоритет:* ${priorityEmoji} ${task.priority}\n` +
+                    `📖 *Тип:* ${task.issueType}\n\n` +
+                    `📝 *Описание:* ${fullDescription}`;
+
+                const keyboard = new InlineKeyboard()
+                    .text('⬆ Скрыть', `toggle_description:${task.id}`)
+                    .url('📌 Открыть в Jira', taskUrl);
+
+                if (attachments.length > 0) {
+                    await ctx.replyWithMediaGroup(attachments);
+                }
+
+                await ctx.editMessageText(expandedText, {
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard
+                });
+
+            } else {
+                // Сворачиваем описание
+                const collapsedText = `📌 *Задача:* [${task.id}](${taskUrl})\n` +
+                    `📍 *Источник:* ${task.source}\n` +
+                    `🔹 *Приоритет:* ${priorityEmoji} ${task.priority}\n`;
+
+                const keyboard = new InlineKeyboard()
+                    .text('⬇ Подробнее', `toggle_description:${task.id}`)
+                    .url('📌 Открыть в Jira', taskUrl);
+
+                await ctx.editMessageText(collapsedText, {
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard
+                });
+            }
+        });
+
+    } catch (error) {
+        console.error('Ошибка при обработке кнопки "Подробнее/Скрыть":', error);
+        await ctx.reply('Произошла ошибка.');
     }
 });
 
