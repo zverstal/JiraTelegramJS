@@ -489,6 +489,11 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             const taskUrl = getTaskUrl(task.source, task.id);
 
             // Проверяем, развернуто ли описание
+
+            console.log("CTX OBJECT:", ctx);
+            console.log("CTX MESSAGE:", ctx.message);
+            console.log("CTX MESSAGE TEXT:", ctx.message?.text);
+
             const isExpanded = ctx.message.text.includes(fullDescription.substring(0, 20));
 
             if (!isExpanded) {
