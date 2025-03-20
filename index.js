@@ -22,44 +22,6 @@ function getMoscowTimestamp() {
     return DateTime.now().setZone('Europe/Moscow').toFormat('yyyy-MM-dd HH:mm:ss');
 }
 
-// 1️⃣ Создаём колонку для отложенного удаления, если её нет
-db.serialize(() => {
-    db.run(`ALTER TABLE tasks ADD COLUMN markedForDeletion DATETIME DEFAULT NULL`, [], (err) => {
-        if (err && !err.message.includes("duplicate column name")) {
-            console.error("Ошибка добавления колонки markedForDeletion:", err);
-        }
-    });
-});
-
-// 2️⃣ Помечаем задачи на удаление, а не удаляем сразу
-async function markTasksForDeletion(source, fetchedTaskIds) {
-    return new Promise((resolve, reject) => {
-        const placeholders = fetchedTaskIds.map(() => '?').join(',');
-        db.run(
-            `UPDATE tasks SET markedForDeletion = ? WHERE id NOT IN (${placeholders}) AND source = ?`,
-            [getMoscowTimestamp(), ...fetchedTaskIds, source],
-            function (err) {
-                if (err) reject(err);
-                else resolve();
-            }
-        );
-    });
-}
-
-// 3️⃣ Удаляем задачи только если они устарели больше 3 дней
-async function deleteOldTasks() {
-    return new Promise((resolve, reject) => {
-        db.run(
-            `DELETE FROM tasks WHERE markedForDeletion IS NOT NULL 
-             AND markedForDeletion < datetime('now', '-3 days')`,
-            function (err) {
-                if (err) reject(err);
-                else resolve();
-            }
-        );
-    });
-}
-
 // Создаём нужные таблицы в SQLite
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS tasks (
@@ -100,9 +62,9 @@ function getPriorityEmoji(priority) {
     return emojis[priority] || '';
 }
 
-// Функция получения URL задачи в Jira
-function getTaskUrl(source, taskKey) {
-    return `https://jira.${source}.team/browse/${taskKey}`;
+// Генерация URL для Jira
+function getTaskUrl(source, taskId) {
+    return `https://jira.${source}.team/browse/${taskId}`;
 }
 
 // Маппинг Telegram username → ФИО (пример)
@@ -222,17 +184,16 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
             },
             params: { jql }
         });
-
         console.log(`${source} Jira API response:`, response.data);
 
         const fetchedTaskIds = response.data.issues.map(i => i.key);
 
-        // ✅ 1) Помечаем лишние задачи на удаление (но НЕ удаляем сразу!)
+        // Удаляем из локальной БД лишние
         await new Promise((resolve, reject) => {
             const placeholders = fetchedTaskIds.map(() => '?').join(',');
             db.run(
-                `UPDATE tasks SET markedForDeletion = ? WHERE id NOT IN (${placeholders}) AND source = ?`,
-                [getMoscowTimestamp(), ...fetchedTaskIds, source],
+                `DELETE FROM tasks WHERE id NOT IN (${placeholders}) AND source = ?`,
+                [...fetchedTaskIds, source],
                 function(err) {
                     if (err) {
                         reject(err);
@@ -243,7 +204,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
             );
         });
 
-        // ✅ 2) Обновляем / добавляем задачи
+        // Обновляем / добавляем задачи
         for (const issue of response.data.issues) {
             const task = {
                 id: issue.key,
@@ -271,41 +232,26 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
             });
 
             if (existingTask) {
-                // ✅ Если задача уже есть, обновляем данные и снимаем флаг удаления
                 db.run(
-                    `UPDATE tasks SET title=?, priority=?, issueType=?, department=?, source=?, markedForDeletion=NULL WHERE id=?`,
+                    `UPDATE tasks SET title=?, priority=?, issueType=?, department=?, source=? WHERE id=?`,
                     [task.title, task.priority, task.issueType, task.department, task.source, task.id]
                 );
             } else {
-                // ✅ Если задачи нет в БД, добавляем новую
                 db.run(
-                    `INSERT INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source, markedForDeletion)
-                     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL)`,
+                    `INSERT INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source)
+                     VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
                     [task.id, task.title, task.priority, task.issueType, task.department, task.dateAdded, task.source]
                 );
             }
         }
-
-        // ✅ 3) Удаляем задачи, которые помечены более 3 дней назад
-        await new Promise((resolve, reject) => {
-            db.run(
-                `DELETE FROM tasks WHERE markedForDeletion IS NOT NULL 
-                 AND markedForDeletion < datetime('now', '-3 days')`,
-                function(err) {
-                    if (err) reject(err);
-                    else resolve();
-                }
-            );
-        });
-
     } catch (error) {
-        console.error(`Ошибка при получении задач из ${source} Jira:`, error);
+        console.error(`Error fetching and storing tasks from ${source} Jira:`, error);
     }
 }
 
-async function getJiraTaskDetails(source, taskKey) {
+async function getJiraTaskDetails(source, taskId) {
     try {
-        const url = `https://jira.${source}.team/rest/api/2/issue/${taskKey}?fields=summary,description,attachment`;
+        const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}?fields=summary,description,attachment`;
         const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
 
         const response = await axios.get(url, {
@@ -314,11 +260,9 @@ async function getJiraTaskDetails(source, taskKey) {
                 'Accept': 'application/json'
             }
         });
-
-        // ✅ Теперь корректно получаем `key`
         return response.data;
     } catch (error) {
-        console.error(`Ошибка при получении данных задачи ${taskKey} из Jira (${source}):`, error);
+        console.error(`Ошибка при получении данных задачи ${taskId} из Jira (${source}):`, error);
         return null;
     }
 }
@@ -333,47 +277,40 @@ async function sendJiraTasks(ctx) {
         (department = "Техническая поддержка" AND (lastSent IS NULL OR lastSent < date('${today}')))
         OR
         (issueType IN ('Infra', 'Office', 'Prod') AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days')))
-        ORDER BY 
-            CASE 
-                WHEN department = 'Техническая поддержка' THEN 1
-                ELSE 2
-            END,
-            priority DESC
+        ORDER BY CASE
+            WHEN department = 'Техническая поддержка' THEN 1
+            ELSE 2
+        END
     `;
 
     db.all(query, [], async (err, rows) => {
         if (err) {
-            console.error('Ошибка при выборке задач:', err);
+            console.error('Error fetching tasks:', err);
             return;
         }
 
         for (const task of rows) {
-            const taskUrl = getTaskUrl(task.source, task.id);
             const keyboard = new InlineKeyboard();
-
             if (task.department === "Техническая поддержка") {
                 keyboard
                     .text('Взять в работу', `take_task:${task.id}`)
-                    .url('Перейти к задаче', taskUrl)
+                    .url('Перейти к задаче', getTaskUrl(task.source, task.id))
                     .text('⬇ Подробнее', `toggle_description:${task.id}`);
             } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
                 keyboard
-                    .url('Перейти к задаче', taskUrl)
+                    .url('Перейти к задаче', getTaskUrl(task.source, task.id))
                     .text('⬇ Подробнее', `toggle_description:${task.id}`);
             }
 
-            const messageText = 
-                `<b>Задача:</b> ${task.id}\n` +
-                `<b>Источник:</b> ${task.source}\n` +
-                `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a>\n` +
-                `<b>Описание:</b> ${task.title}\n` +
-                `<b>Приоритет:</b> ${getPriorityEmoji(task.priority)}\n` +
-                `<b>Тип задачи:</b> ${task.issueType}`;
+            const messageText =
+                `Задача: ${task.id}\n` +
+                `Источник: ${task.source}\n` +
+                `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
+                `Описание: ${task.title}\n` +
+                `Приоритет: ${getPriorityEmoji(task.priority)}\n` +
+                `Тип задачи: ${task.issueType}`;
 
-            await ctx.reply(messageText, {
-                parse_mode: 'HTML',
-                reply_markup: keyboard
-            });
+            await ctx.reply(messageText, { reply_markup: keyboard });
 
             const moscowTimestamp = getMoscowTimestamp();
             db.run('UPDATE tasks SET lastSent = ? WHERE id = ?', [moscowTimestamp, task.id]);
@@ -527,12 +464,8 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
                         `Отдел: ${task.department}\n` +
                         `Взял в работу: ${displayName}`;
 
-                    const keyboard = new InlineKeyboard()
-                        .url('Перейти к задаче', getTaskUrl(task.source, task.id))
-                        .text('Подробнее', `toggle_description:${task.id}`);
-
                     try {
-                        await ctx.editMessageText(msg, { reply_markup: keyboard });
+                        await ctx.editMessageText(msg);
                     } catch (e) {
                         console.error('Ошибка editMessageText:', e);
                     }
@@ -601,6 +534,11 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
+// Функция обработки таблиц (оборачиваем в <pre></pre>)
+function formatTables(text) {
+    return text.replace(/\|(.+?)\|/g, match => `<pre>${match.trim()}</pre>`);
+}
+
 // Функция обработки блоков кода
 function convertCodeBlocks(text) {
     return text
@@ -612,17 +550,18 @@ function convertCodeBlocks(text) {
         });
 }
 
-// Функция преобразования Markdown в HTML (без таблиц)
+// Функция преобразования Markdown в HTML
 function parseCustomMarkdown(text) {
     if (!text) return '';
 
-    // Обрабатываем блоки кода
-    text = convertCodeBlocks(text);
+    text = convertCodeBlocks(text); // Обрабатываем блоки кода
+    text = formatTables(text); // Обрабатываем таблицы
 
     return text
-        .replace(/\*(.*?)\*/g, '<b>$1</b>')  // **Жирный**
-        .replace(/_(.*?)_/g, '<i>$1</i>')      // _Курсив_
-        .replace(/\+(.*?)\+/g, '<u>$1</u>') // +Подчеркнутый+
+        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **Жирный**
+        .replace(/\*(.*?)\*/g, '<i>$1</i>')      // *Курсив*
+        .replace(/__(.*?)__/g, '<u>$1</u>')      // __Подчеркнутый__
+        .replace(/~~(.*?)~~/g, '<s>$1</s>')      // ~~Зачеркнутый~~
         .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') // `Инлайн-код`
         .replace(/^\-\s(.*)/gm, '• $1')         // - Маркированный список
         .replace(/^\*\s(.*)/gm, '• $1')         // * Альтернативный маркированный список
@@ -641,54 +580,23 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.answerCallbackQuery();
         const taskId = ctx.match[1];
 
-        // 1) Сначала ищем задачу в локальной БД
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err) {
                 console.error('Ошибка при получении задачи из базы:', err);
                 await ctx.reply('Произошла ошибка.');
                 return;
             }
-
-            // 2) Если задачи нет в БД, загружаем из Jira API
             if (!task) {
-                console.log(`Задача ${taskId} не найдена в локальной БД. Запрашиваем в Jira...`);
-                const issue = await getJiraTaskDetailsFromAPI(taskId);
-
-                if (!issue) {
-                    await ctx.reply(`Задача ${taskId} не найдена в Jira.`);
-                    return;
-                }
-
-                // 3) Если нашли в Jira, добавляем в БД
-                task = {
-                    id: issue.id,
-                    title: issue.fields.summary || 'Нет заголовка',
-                    priority: issue.fields.priority?.name || 'Не указан',
-                    issueType: issue.fields.issuetype?.name || 'Не указан',
-                    department: issue.fields.customfield_10500?.value || 'Не указан',
-                    source: issue.source || 'sxl', // По умолчанию ставим sxl
-                    dateAdded: new Date().toISOString()
-                };
-
-                db.run(
-                    `INSERT INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source)
-                     VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
-                    [task.id, task.title, task.priority, task.issueType, task.department, task.dateAdded, task.source],
-                    (dbErr) => {
-                        if (dbErr) console.error('Ошибка при добавлении задачи в БД:', dbErr);
-                        else console.log(`Задача ${taskId} добавлена в локальную БД.`);
-                    }
-                );
-            }
-
-            // 4) Достаём детали из Jira (если нужно)
-            const issue = await getJiraTaskDetails(task.source, task.id);
-            if (!issue) {
-                await ctx.reply(`Не удалось загрузить данные из Jira по задаче ${task.id}.`);
+                await ctx.reply('Задача не найдена.');
                 return;
             }
 
-            // 5) Формируем данные задачи
+            const issue = await getJiraTaskDetails(task.source, task.id);
+            if (!issue) {
+                await ctx.reply('Не удалось загрузить данные из Jira.');
+                return;
+            }
+
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
@@ -702,7 +610,6 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             const isExpanded = currentText.endsWith("...");
 
             if (!isExpanded) {
-                // ---------- Разворачиваем ----------
                 const expandedText = 
                     `<b>Задача:</b> ${task.id}\n` +
                     `<b>Источник:</b> ${task.source}\n` +
@@ -753,7 +660,6 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 });
 
             } else {
-                // ---------- Сворачиваем ----------
                 const collapsedText = 
                     `<b>Задача:</b> ${task.id}\n` +
                     `<b>Источник:</b> ${task.source}\n` +
@@ -786,32 +692,6 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.reply('Произошла ошибка при обработке вашего запроса.');
     }
 });
-
-// Функция запроса задачи из Jira API
-async function getJiraTaskDetailsFromAPI(taskId) {
-    try {
-        const sources = ['sxl', 'betone']; // Проверяем в обоих источниках
-
-        for (const source of sources) {
-            const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}`;
-            const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
-
-            const response = await axios.get(url, {
-                headers: {
-                    'Authorization': `Bearer ${pat}`,
-                    'Accept': 'application/json'
-                }
-            });
-
-            if (response.data) {
-                return { ...response.data, source };
-            }
-        }
-    } catch (error) {
-        console.error(`Ошибка при получении задачи ${taskId} из Jira:`, error);
-    }
-    return null;
-}
 
 
 // ----------------------------------------------------------------------------------
