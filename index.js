@@ -1,19 +1,15 @@
 require('dotenv').config();
-const { Bot, InlineKeyboard } = require('grammy');
+const { Bot, InlineKeyboard, InputFile } = require('grammy');
 const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
 const { DateTime } = require('luxon');
 const cron = require('node-cron');
 const Bottleneck = require('bottleneck');
-const { InputFile } = require('grammy');
-
-
 
 // Создаем экземпляр бота
 const bot = new Bot(process.env.BOT_API_KEY);
 // Создаем базу данных
 const db = new sqlite3.Database('tasks.db');
-
 
 // Функция для получения текущего времени Москвы в формате 'yyyy-MM-dd HH:mm:ss'
 function getMoscowTimestamp() {
@@ -109,7 +105,15 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
 
         if (source === 'sxl') {
             // JQL запрос для задач DevOps и Support
-            jql = `\n                project = SUPPORT AND (\n                    (issuetype = Infra AND status = "Open") OR\n                    (issuetype = Office AND status = "Under review") OR\n                    (issuetype = Office AND status = "Waiting for support") OR\n                    (issuetype = Prod AND status = "Waiting for Developers approval") OR\n                    (Отдел = ${departmentQuery} AND status = "Open")\n                )\n            `;
+            jql = `
+                project = SUPPORT AND (
+                    (issuetype = Infra AND status = "Open") OR
+                    (issuetype = Office AND status = "Under review") OR
+                    (issuetype = Office AND status = "Waiting for support") OR
+                    (issuetype = Prod AND status = "Waiting for Developers approval") OR
+                    (Отдел = ${departmentQuery} AND status = "Open")
+                )
+            `;
         } else {
             // Запрос для Технической поддержки (betone)
             jql = `project = SUPPORT AND (Отдел = ${departmentQuery}) AND status = "Open"`;
@@ -194,6 +198,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
     }
 }
 
+// Загрузка деталей задачи (описание, вложения)
 async function getJiraTaskDetails(source, taskId) {
     try {
         const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}?fields=summary,description,attachment`;
@@ -217,10 +222,18 @@ async function getJiraTaskDetails(source, taskId) {
 // Отправка задач в Telegram
 //---------------------------------------------------------------------
 async function sendJiraTasks(ctx) {
-    // Вытаскиваем дату ("2025-03-10" например)
     const today = getMoscowTimestamp().split(' ')[0];
-    // Запрос для задач
-    const query = `\n        SELECT * FROM tasks WHERE \n        (department = "Техническая поддержка" AND (lastSent IS NULL OR lastSent < date('${today}')))\n        OR\n        (issueType IN ('Infra', 'Office', 'Prod') AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days')))\n        ORDER BY CASE \n            WHEN department = 'Техническая поддержка' THEN 1 \n            ELSE 2 \n        END\n    `;
+    // Отбираем задачи по условию (support/infra и т.д.)
+    const query = `
+        SELECT * FROM tasks WHERE
+        (department = "Техническая поддержка" AND (lastSent IS NULL OR lastSent < date('${today}')))
+        OR
+        (issueType IN ('Infra', 'Office', 'Prod') AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days')))
+        ORDER BY CASE
+            WHEN department = 'Техническая поддержка' THEN 1
+            ELSE 2
+        END
+    `;
 
     db.all(query, [], async (err, rows) => {
         if (err) {
@@ -239,9 +252,10 @@ async function sendJiraTasks(ctx) {
             } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
                 keyboard.url('Перейти к задаче', getTaskUrl(task.source, task.id));
                 keyboard.text('⬇ Подробнее', `toggle_description:${task.id}`);
-            }            
+            }
 
-            const messageText = `Задача: ${task.id}\n` +
+            const messageText =
+                `Задача: ${task.id}\n` +
                 `Источник: ${task.source}\n` +
                 `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
                 `Описание: ${task.title}\n` +
@@ -265,13 +279,11 @@ async function sendJiraTasks(ctx) {
 //---------------------------------------------------------------------
 async function checkForNewComments() {
     try {
-        // JQL
         const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND status in (Done, Awaiting, "Awaiting implementation") AND updated >= -2d`;
         const sources = ['sxl', 'betone'];
 
         // Jira usernames, которых игнорируем
-        const excludedAuthors = Object.values(jiraUserMappings)
-            .flatMap(mapping => Object.values(mapping));
+        const excludedAuthors = Object.values(jiraUserMappings).flatMap(mapping => Object.values(mapping));
 
         for (const source of sources) {
             const url = `https://jira.${source}.team/rest/api/2/search`;
@@ -314,21 +326,17 @@ async function checkForNewComments() {
 
                         // Если нет записи в таблице task_comments
                         if (!row) {
-                            // При первом комментарии, если автор не в excluded
                             if (!excludedAuthors.includes(author)) {
                                 sendTelegramMessage(taskId, source, issue, lastComment, author);
                             }
-
                             db.run(
                                 'INSERT INTO task_comments (taskId, lastCommentId, assignee) VALUES (?, ?, ?)',
                                 [taskId, lastCommentId, issue.fields.assignee?.displayName || 'Не указан']
                             );
                         } else if (row.lastCommentId !== lastCommentId) {
-                            // Если комментарий действительно новый
                             if (!excludedAuthors.includes(author)) {
                                 sendTelegramMessage(taskId, source, issue, lastComment, author);
                             }
-
                             db.run(
                                 'UPDATE task_comments SET lastCommentId = ?, assignee = ? WHERE taskId = ?',
                                 [lastCommentId, issue.fields.assignee?.displayName || 'Не указан', taskId]
@@ -349,8 +357,8 @@ async function checkForNewComments() {
 // Лимитер для отправки сообщений (чтобы не было спама)
 //---------------------------------------------------------------------
 const limiter = new Bottleneck({
-    minTime: 2000,     // Минимум 2 секунды между запросами
-    maxConcurrent: 1   // Один запрос одновременно
+    minTime: 2000,
+    maxConcurrent: 1
 });
 
 const sendMessageWithLimiter = limiter.wrap(async (chatId, messageText, options) => {
@@ -367,10 +375,10 @@ const sendMessageWithLimiter = limiter.wrap(async (chatId, messageText, options)
 // Функция отправки уведомления о новом комментарии
 //---------------------------------------------------------------------
 function sendTelegramMessage(taskId, source, issue, lastComment, author) {
-    const keyboard = new InlineKeyboard();
-    keyboard.url('Перейти к задаче', getTaskUrl(source, taskId));
+    const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, taskId));
 
-    const messageText = `В задаче появился новый комментарий:\n\n` +
+    const messageText =
+        `В задаче появился новый комментарий:\n\n` +
         `Задача: ${taskId}\n` +
         `Источник: ${source}\n` +
         `Ссылка: ${getTaskUrl(source, taskId)}\n` +
@@ -401,7 +409,6 @@ cron.schedule('*/5 * * * *', () => {
 //---------------------------------------------------------------------
 bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     try {
-        // Обязательный ответ на колбэк
         await ctx.answerCallbackQuery();
 
         console.log('Нажали кнопку "Взять в работу":', ctx.match[1]);
@@ -437,7 +444,8 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
 
                 if (success) {
                     const displayName = usernameMappings[ctx.from.username] || ctx.from.username;
-                    const messageText = `Задача: ${task.id}\n` +
+                    const messageText =
+                        `Задача: ${task.id}\n` +
                         `Источник: ${task.source}\n` +
                         `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
                         `Описание: ${task.title}\n` +
@@ -445,15 +453,16 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
                         `Отдел: ${task.department}\n` +
                         `Взял в работу: ${displayName}`;
 
-                    // Убираем InlineKeyboard
                     try {
                         await ctx.editMessageText(messageText);
                     } catch (editErr) {
                         console.error('Ошибка при редактировании сообщения:', editErr);
                     }
 
-                    db.run('INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)',
-                        [ctx.from.username, taskId, 'take_task', getMoscowTimestamp()]);
+                    db.run(
+                        'INSERT INTO user_actions (username, taskId, action, timestamp) VALUES (?, ?, ?, ?)',
+                        [ctx.from.username, taskId, 'take_task', getMoscowTimestamp()]
+                    );
                 } else {
                     await ctx.reply(`Не удалось обновить статус задачи ${taskId}. Попробуйте снова.`);
                 }
@@ -467,6 +476,70 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     }
 });
 
+//---------------------------------------------------------------------
+// Функция для обновления статуса задачи в Jira
+//---------------------------------------------------------------------
+async function updateJiraTaskStatus(source, taskId, telegramUsername) {
+    try {
+        let transitionId;
+        if (source === 'sxl') {
+            transitionId = '221'; // например, ID транзишена для sxl
+        } else if (source === 'betone') {
+            transitionId = '201'; // например, ID транзишена для betone
+        } else {
+            console.error('Invalid source specified');
+            return false;
+        }
+
+        const jiraUsername = jiraUserMappings[telegramUsername]?.[source];
+        if (!jiraUsername) {
+            console.error(`No Jira username mapping found for Telegram username: ${telegramUsername}`);
+            return false;
+        }
+
+        const assigneeUrl = `https://jira.${source}.team/rest/api/2/issue/${taskId}/assignee`;
+        const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
+
+        // Назначаем исполнителя
+        const assigneeResponse = await axios.put(
+            assigneeUrl,
+            { name: jiraUsername },
+            {
+                headers: {
+                    'Authorization': `Bearer ${pat}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        if (assigneeResponse.status !== 204) {
+            console.error(`Error assigning Jira task: ${assigneeResponse.status}`);
+            return false;
+        }
+
+        // Выполняем переход (transition)
+        const transitionUrl = `https://jira.${source}.team/rest/api/2/issue/${taskId}/transitions`;
+        const transitionResponse = await axios.post(
+            transitionUrl,
+            { transition: { id: transitionId } },
+            {
+                headers: {
+                    'Authorization': `Bearer ${pat}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        return transitionResponse.status === 204;
+    } catch (error) {
+        console.error(`Error updating ${source} Jira task:`, error);
+        return false;
+    }
+}
+
+//---------------------------------------------------------------------
+// Обработчик кнопки "Подробнее" / "Скрыть"
+//---------------------------------------------------------------------
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
         await ctx.answerCallbackQuery();
@@ -479,172 +552,159 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Допустим, мы уже загрузили полные данные задачи из Jira
+            // Загружаем данные о задаче из Jira (полное описание, вложения)
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
-                await ctx.reply('Не удалось загрузить данные из Jira.');
+                await ctx.reply('Ошибка: не удалось загрузить данные из Jira.');
                 return;
             }
 
-            // --------------------------------------------------
-            // 1) Формируем массив объектов для replyWithMediaGroup
-            // --------------------------------------------------
-            const attachments = [];
-            for (const att of issue.fields.attachment || []) {
-                // Берем только изображения и видео
-                if (att.mimeType.startsWith('image/') || att.mimeType.startsWith('video/')) {
-                    try {
-                        // 2) Скачиваем файл из Jira как arraybuffer
-                        const fileResponse = await axios.get(att.content, {
-                            responseType: 'arraybuffer',
-                            headers: {
-                                // Пат берем из окружения, в зависимости от source
-                                'Authorization': `Bearer ${
-                                    task.source === 'sxl' 
-                                        ? process.env.JIRA_PAT_SXL 
-                                        : process.env.JIRA_PAT_BETONE
-                                }`
-                            }
-                        });
+            const summary = issue.fields.summary || 'Нет заголовка';
+            const fullDescription = issue.fields.description || 'Нет описания';
+            const taskUrl = getTaskUrl(task.source, task.id);
+            const priorityEmoji = getPriorityEmoji(task.priority);
 
-                        // 3) Превращаем результат в Buffer
-                        const fileBuffer = Buffer.from(fileResponse.data);
+            // Проверяем, уже развернуто ли (по наличию fullDescription)
+            const isExpanded = ctx.callbackQuery.message?.text?.includes(fullDescription.substring(0, 20));
 
-                        // 4) Создаем объект вложения
-                        attachments.push({
-                            type: att.mimeType.startsWith('image/') ? 'photo' : 'video',
-                            media: new InputFile(fileBuffer, att.filename || 'file')
-                        });
-                    } catch (errDownload) {
-                        console.error(`Ошибка при скачивании вложения ${att.filename}:`, errDownload);
-                    }
+            if (!isExpanded) {
+                // ============ Развернуть ============
+                const expandedText =
+                    `Задача: [${task.id}](${taskUrl})\n` +
+                    `Источник: ${task.source}\n` +
+                    `Приоритет: ${priorityEmoji} ${task.priority}\n` +
+                    `Тип: ${task.issueType}\n` +
+                    `Заголовок: ${summary}\n\n` +
+                    `Описание: ${fullDescription}`;
+
+                // Кнопки: "Скрыть", "Открыть в Jira", + ссылки на вложения
+                const keyboard = new InlineKeyboard()
+                    .text('Скрыть', `toggle_description:${task.id}`)
+                    .url('Открыть в Jira', taskUrl);
+
+                // Добавим кнопки-ссылки на вложения
+                // (если Jira закрыта, нужно быть залогиненным во встроенном браузере)
+                const attachments = issue.fields.attachment || [];
+                attachments.forEach((att, idx) => {
+                    keyboard.row().url(`Вложение #${idx + 1}`, att.content);
+                });
+
+                await ctx.editMessageText(expandedText, {
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard
+                });
+
+            } else {
+                // ============ Свернуть ============
+                const collapsedText =
+                    `Задача: ${task.id}\n` +
+                    `Источник: ${task.source}\n` +
+                    `Ссылка: ${taskUrl}\n` +
+                    `Описание: ${task.title}\n` +
+                    `Приоритет: ${priorityEmoji} ${task.priority}\n` +
+                    `Тип задачи: ${task.issueType}`;
+
+                // Восстанавливаем кнопки
+                let keyboard = new InlineKeyboard();
+                if (task.department === "Техническая поддержка") {
+                    keyboard
+                        .text('Взять в работу', `take_task:${task.id}`)
+                        .url('Перейти к задаче', taskUrl)
+                        .text('Подробнее', `toggle_description:${task.id}`);
+                } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
+                    keyboard
+                        .url('Перейти к задаче', taskUrl)
+                        .text('Подробнее', `toggle_description:${task.id}`);
                 }
+
+                await ctx.editMessageText(collapsedText, {
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard
+                });
             }
-
-            // --------------------------------------------------
-            // 5) Если есть вложения, отправляем их одним "медиа-группой"
-            // --------------------------------------------------
-            if (attachments.length > 0) {
-                try {
-                    await ctx.replyWithMediaGroup(attachments);
-                } catch (errSend) {
-                    console.error('Ошибка при отправке вложений в Telegram:', errSend);
-                }
-            }
-
-            // --------------------------------------------------
-            // Далее уже твой код редактирования/сворачивания
-            // --------------------------------------------------
-            // Пример:
-            await ctx.editMessageText(`Описание задачи ...`, { /* ... */ });
-
         });
     } catch (error) {
-        console.error('Ошибка:', error);
+        console.error('Ошибка при обработке toggle_description:', error);
         await ctx.reply('Произошла ошибка.');
     }
 });
 
-
-
-
-
 //---------------------------------------------------------------------
 // Интеграция с Confluence для определения дежурного специалиста
 //---------------------------------------------------------------------
-// Допустим, что ID или пространство страницы - условное (надо уточнить реальный)
-// Функция извлекает дежурного специалиста, сверяя сегодняшнюю дату и диапазон
 async function fetchDutyEngineer() {
     try {
-      const pageId = '3539406'; // замените на ваш реальный pageId
-      const token = process.env.CONFLUENCE_API_TOKEN; // Bearer-токен из .env
-  
-      // 1) Делаем GET-запрос к Confluence с expand=body.view
-      const resp = await axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json'
-        }
-      });
-  
-      // Если нужного поля нет, значит страница недоступна или нет прав
-      const html = resp.data?.body?.view?.value;
-      if (!html) {
-        console.log('Не удалось получить HTML из body.view.value');
-        return 'Не найдено';
-      }
-  
-      // 2) Парсим HTML, ищем строки вида:
-      // <tr><td>1</td><td>06.01-12.01</td><td>Иванов</td></tr>
-      const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
-      const schedule = [];
-      let match;
-  
-      while ((match = rowRegex.exec(html)) !== null) {
-        schedule.push({
-          index: match[1],   // "1", "2", ...
-          range: match[2],   // "06.01-12.01"
-          name: match[3].trim()
-        });
-      }
-  
-      if (schedule.length === 0) {
-        console.log('Не удалось извлечь расписание дежурств из HTML.');
-        return 'Не найдено';
-      }
-  
-      // 3) Получаем "сегодня" по Москве в формате 'yyyy-MM-dd HH:mm:ss'
-      const nowStr = getMoscowTimestamp(); // например "2025-03-10 13:45:00"
-      // Парсим его в Luxon DateTime
-      const today = DateTime.fromFormat(nowStr, 'yyyy-MM-dd HH:mm:ss');
-  
-      // Перебираем все интервалы из таблицы
-      for (const item of schedule) {
-        const [startStr, endStr] = item.range.split('-'); // "06.01" / "12.01"
-        const [startDay, startMonth] = startStr.split('.');
-        const [endDay, endMonth] = endStr.split('.');
-        const year = 2025; // в таблице указан 2025
-  
-        // startDate / endDate тоже делаем DateTime без zone
-        // (мы сравниваем с today, который также локальный)
-        const startDate = DateTime.fromObject({
-          year,
-          month: Number(startMonth),
-          day: Number(startDay)
-        });
-        const endDate = DateTime.fromObject({
-          year,
-          month: Number(endMonth),
-          day: Number(endDay)
-        });
-  
-        // Если today входит в [startDate..endDate], возвращаем фамилию
-        if (today >= startDate && today <= endDate) {
-          return item.name;
-        }
-      }
-  
-      // Если ни один интервал не подошёл
-      return 'Не найдено';
-  
-    } catch (error) {
-      console.error('Ошибка при запросе к Confluence:', error);
-      throw error; // пробрасываем выше, чтобы можно было отловить в вызывающем коде
-    }
-  }
-  
+        const pageId = '3539406'; // замените на ваш реальный pageId
+        const token = process.env.CONFLUENCE_API_TOKEN; // Bearer-токен из .env
 
-// Пример команды /duty
+        // 1) Делаем GET-запрос к Confluence с expand=body.view
+        const resp = await axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/json'
+            }
+        });
+
+        const html = resp.data?.body?.view?.value;
+        if (!html) {
+            console.log('Не удалось получить HTML из body.view.value');
+            return 'Не найдено';
+        }
+
+        // 2) Парсим HTML, ищем строки вида:
+        // <tr><td>1</td><td>06.01-12.01</td><td>Иванов</td></tr>
+        const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
+        const schedule = [];
+        let match;
+
+        while ((match = rowRegex.exec(html)) !== null) {
+            schedule.push({
+                index: match[1],
+                range: match[2],
+                name: match[3].trim()
+            });
+        }
+
+        if (schedule.length === 0) {
+            console.log('Не удалось извлечь расписание дежурств из HTML.');
+            return 'Не найдено';
+        }
+
+        // 3) Получаем "сегодня" по Москве
+        const nowStr = getMoscowTimestamp();
+        const today = DateTime.fromFormat(nowStr, 'yyyy-MM-dd HH:mm:ss');
+
+        for (const item of schedule) {
+            const [startStr, endStr] = item.range.split('-'); // "06.01" / "12.01"
+            const [startDay, startMonth] = startStr.split('.');
+            const [endDay, endMonth] = endStr.split('.');
+            const year = 2025; // пример
+
+            const startDate = DateTime.fromObject({ year, month: +startMonth, day: +startDay });
+            const endDate = DateTime.fromObject({ year, month: +endMonth, day: +endDay });
+
+            if (today >= startDate && today <= endDate) {
+                return item.name;
+            }
+        }
+
+        return 'Не найдено';
+    } catch (error) {
+        console.error('Ошибка при запросе к Confluence:', error);
+        throw error;
+    }
+}
+
+// Команда /duty
 bot.command('duty', async (ctx) => {
-  try {
-    const engineer = await fetchDutyEngineer();
-    await ctx.reply(`Дежурный: ${engineer}`);
-  } catch (err) {
-    console.error('Ошибка при получении дежурного:', err);
-    await ctx.reply('Произошла ошибка при запросе дежурного.');
-  }
+    try {
+        const engineer = await fetchDutyEngineer();
+        await ctx.reply(`Дежурный: ${engineer}`);
+    } catch (err) {
+        console.error('Ошибка при получении дежурного:', err);
+        await ctx.reply('Произошла ошибка при запросе дежурного.');
+    }
 });
-      
 
 //---------------------------------------------------------------------
 // Расписание ночной и утренней смены
@@ -678,7 +738,7 @@ bot.command('start', async (ctx) => {
             scheduled: true,
             timezone: 'Europe/Moscow'
         });
-    
+
         // Утренняя смена - в 10:00
         if (!morningShiftCron) {
             morningShiftCron = cron.schedule('0 10 * * *', async () => {
@@ -695,8 +755,7 @@ bot.command('start', async (ctx) => {
                 scheduled: true,
                 timezone: 'Europe/Moscow'
             });
-        }  // <-- ВОТ эта закрывающая скобка
-    
+        }
         nightShiftCron.start();
         morningShiftCron.start();
     }
