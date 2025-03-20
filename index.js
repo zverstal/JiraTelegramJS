@@ -557,9 +557,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
 
             // ---------- Функции экранирования MarkdownV2 ----------
             function escapeMarkdownV2(text) {
-                // экранируем все спецсимволы
                 return text.replace(/([\_\*\[\]\(\)~`>#+\-=|{}\.!])/g, '\\$1');
-            }
+              }
 
             function escapeURL(url) {
                 // в ссылке особенно важны скобки
