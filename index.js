@@ -151,7 +151,6 @@ cron.schedule('0 3 * * *', () => {
 // 4) ФУНКЦИИ ДЛЯ RABOTЫ С JIRA
 // ----------------------------------------------------------------------------------
 
-// 4.1) Фетчим задачи из Jira (сразу из 2 источников)
 async function fetchAndStoreJiraTasks() {
     await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL, 'Техническая поддержка');
     await fetchAndStoreTasksFromJira('betone', 'https://jira.betone.team/rest/api/2/search', process.env.JIRA_PAT_BETONE, 'Техническая поддержка');
@@ -291,15 +290,17 @@ async function sendJiraTasks(ctx) {
 
         for (const task of rows) {
             const keyboard = new InlineKeyboard();
+
             if (task.department === "Техническая поддержка") {
                 keyboard
                     .text('Взять в работу', `take_task:${task.id}`)
                     .url('Перейти к задаче', getTaskUrl(task.source, task.id))
-                    .text('⬇ Подробнее', `toggle_description:${task.id}`);
+                    // Вместо toggle_description – show_description
+                    .text('⬇ Подробнее', `show_description:${task.id}`);
             } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
                 keyboard
                     .url('Перейти к задаче', getTaskUrl(task.source, task.id))
-                    .text('⬇ Подробнее', `toggle_description:${task.id}`);
+                    .text('⬇ Подробнее', `show_description:${task.id}`);
             }
 
             const messageText =
@@ -389,7 +390,6 @@ async function checkForNewComments() {
     }
 }
 
-// Лимитер на отправку
 const limiter = new Bottleneck({
     minTime: 2000,
     maxConcurrent: 1
@@ -398,7 +398,6 @@ const sendMessageWithLimiter = limiter.wrap(async (chatId, text, opts) => {
     await bot.api.sendMessage(chatId, text, opts);
 });
 
-// Отправляем сообщение при новом комментарии
 function sendTelegramMessage(taskId, source, issue, lastComment, author) {
     const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, taskId));
 
@@ -485,52 +484,60 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     }
 });
 
-// Функция обновления статуса
-async function updateJiraTaskStatus(source, taskId, telegramUsername) {
-    try {
-        let transitionId = source === 'sxl' ? '221' : '201'; // Пример
-        const jiraUsername = jiraUserMappings[telegramUsername]?.[source];
-        if (!jiraUsername) {
-            console.error(`No Jira username for telegram user: ${telegramUsername}`);
-            return false;
-        }
-        const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
+// ----------------------------------------------------------------------------------
+// Инфраструктура "Раскрыв/Свернуть" через show_description/hide_description
+// ----------------------------------------------------------------------------------
 
-        // Назначаем исполнителя
-        const assigneeUrl = `https://jira.${source}.team/rest/api/2/issue/${taskId}/assignee`;
-        const r1 = await axios.put(assigneeUrl, { name: jiraUsername }, {
-            headers: {
-                'Authorization': `Bearer ${pat}`,
-                'Content-Type': 'application/json'
-            }
-        });
-        if (r1.status !== 204) {
-            console.error('Assignee error:', r1.status);
-            return false;
-        }
-
-        // Делаем переход
-        const transitionUrl = `https://jira.${source}.team/rest/api/2/issue/${taskId}/transitions`;
-        const r2 = await axios.post(transitionUrl, {
-            transition: { id: transitionId }
-        }, {
-            headers: {
-                'Authorization': `Bearer ${pat}`,
-                'Content-Type': 'application/json'
-            }
-        });
-        return r2.status === 204;
-    } catch (error) {
-        console.error(`Error updating Jira task:`, error);
-        return false;
-    }
+// Функция экранирования HTML-символов
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 }
 
-// ----------------------------------------------------------------------------------
-// 8) КНОПКА "ПОДРОБНЕЕ" / "СКРЫТЬ", С СОХРАНЕНИЕМ ВЛОЖЕНИЙ НА СЕРВЕРЕ
-// ----------------------------------------------------------------------------------
-// Обработчик кнопки "Подробнее/Скрыть"
-bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
+// Формируем СВЁРНУТЫЙ текст
+function buildCollapsedText(task) {
+    const priorityEmoji = getPriorityEmoji(task.priority);
+    const taskUrl = getTaskUrl(task.source, task.id);
+    const safeTitle = escapeHtml(task.title);
+
+    return (
+        `<b>Задача:</b> ${task.id}\n` +
+        `<b>Источник:</b> ${task.source}\n` +
+        `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a>\n` +
+        `<b>Описание:</b> ${safeTitle}\n` +
+        `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
+        `<b>Тип задачи:</b> ${task.issueType}`
+    );
+}
+
+// Формируем РАЗВЁРНУТЫЙ текст
+async function buildExpandedText(task) {
+    const priorityEmoji = getPriorityEmoji(task.priority);
+    const taskUrl = getTaskUrl(task.source, task.id);
+
+    const issue = await getJiraTaskDetails(task.source, task.id);
+    if (!issue) return null;
+
+    const summary = issue.fields.summary || 'Нет заголовка';
+    const fullDescription = issue.fields.description || 'Нет описания';
+
+    const safeSummary = escapeHtml(summary);
+    const safeDescription = escapeHtml(fullDescription);
+
+    return (
+        `<b>Задача:</b> ${task.id}\n` +
+        `<b>Источник:</b> ${task.source}\n` +
+        `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
+        `<b>Тип:</b> ${task.issueType}\n` +
+        `<b>Заголовок:</b> ${safeSummary}\n\n` +
+        `<b>Описание:</b> ${safeDescription}`
+    );
+}
+
+// show_description:(.+)
+bot.callbackQuery(/^show_description:(.+)$/, async (ctx) => {
     try {
         await ctx.answerCallbackQuery();
         const taskId = ctx.match[1];
@@ -542,133 +549,111 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Получаем данные задачи из Jira
-            const issue = await getJiraTaskDetails(task.source, task.id);
-            if (!issue) {
-                await ctx.reply('Не удалось загрузить данные из Jira.');
+            if (!task) {
+                return ctx.reply('Задача не найдена.');
+            }
+
+            // Строим "развёрнутый" HTML-текст
+            const expandedText = await buildExpandedText(task);
+            if (!expandedText) {
+                await ctx.reply('Не удалось загрузить описание из Jira.');
                 return;
             }
 
-            // Извлекаем поля
-            const summary = issue.fields.summary || 'Нет заголовка';
-            const fullDescription = issue.fields.description || 'Нет описания';
-            const priorityEmoji = getPriorityEmoji(task.priority);
-            const taskUrl = getTaskUrl(task.source, task.id);
+            // Делаем клавиатуру: "Скрыть", "Открыть Jira" и вложения
+            const keyboard = new InlineKeyboard()
+                .text('Скрыть', `hide_description:${task.id}`)
+                .url('Открыть в Jira', getTaskUrl(task.source, task.id));
 
-            // ------ Функция "экранирования" для HTML ------
-            // Нужно превратить <, >, & в &lt;, &gt;, &amp;
-            // чтобы Telegram не подумал, что это HTML-тэги.
-            function escapeHtml(text) {
-                return text
-                  .replace(/&/g, '&amp;')
-                  .replace(/</g, '&lt;')
-                  .replace(/>/g, '&gt;');
+            // По желанию, скачиваем вложения
+            const issue = await getJiraTaskDetails(task.source, task.id);
+            const attachments = issue?.fields?.attachment || [];
+            let counter = 1;
+            for (const att of attachments) {
+                try {
+                    const fileResp = await axios.get(att.content, {
+                        responseType: 'arraybuffer',
+                        headers: {
+                            'Authorization': `Bearer ${
+                                task.source === 'sxl'
+                                    ? process.env.JIRA_PAT_SXL
+                                    : process.env.JIRA_PAT_BETONE
+                            }`
+                        }
+                    });
+
+                    let originalFilename = att.filename || 'file.bin';
+                    originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
+
+                    const finalName = `${uuidv4()}_${originalFilename}`;
+                    const filePath = path.join(ATTACHMENTS_DIR, finalName);
+                    fs.writeFileSync(filePath, fileResp.data);
+
+                    const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
+                    keyboard.row().url(`Вложение #${counter}`, publicUrl);
+                    counter++;
+                } catch (downloadErr) {
+                    console.error('Ошибка скачивания вложения:', downloadErr);
+                }
             }
 
-            // Экранируем потенциально опасные поля
-            const safeSummary = escapeHtml(summary);
-            const safeDescription = escapeHtml(fullDescription);
-
-            // Проверяем, развернуто ли
-            const isExpanded = ctx.callbackQuery.message?.text?.includes(safeSummary.substring(0, 10));
-
-            if (!isExpanded) {
-                // --------- Разворачиваем ---------
-                // Формируем HTML-текст
-                // Вместо <br> используем \n – Telegram в режиме HTML
-                // зачастую просто выводит пробел, но иногда обрабатывает перенос.
-                // Убедимся, что нужна именно такая логика – иначе придётся
-                // разбивать на несколько сообщений.
-                const expandedText =
-                    `<b>Задача:</b> ${task.id}\n` +
-                    `<b>Источник:</b> ${task.source}\n` +
-                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
-                    `<b>Тип:</b> ${task.issueType}\n` +
-                    `<b>Заголовок:</b> ${safeSummary}\n\n` +
-                    `<b>Описание:</b> ${safeDescription}`;
-
-                // Кнопки
-                const keyboard = new InlineKeyboard()
-                    .text('Скрыть', `toggle_description:${task.id}`)
-                    // Можно напрямую ставить URL
-                    .url('Открыть в Jira', taskUrl);
-
-                // Обрабатываем вложения
-                const attachments = issue.fields.attachment || [];
-                let counter = 1;
-                for (const att of attachments) {
-                    try {
-                        const fileResp = await axios.get(att.content, {
-                            responseType: 'arraybuffer',
-                            headers: {
-                                'Authorization': `Bearer ${
-                                    task.source === 'sxl'
-                                        ? process.env.JIRA_PAT_SXL
-                                        : process.env.JIRA_PAT_BETONE
-                                }`
-                            }
-                        });
-
-                        let originalFilename = att.filename || 'file.bin';
-                        // "чистим" имя от опасных символов
-                        originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
-
-                        // Генерируем уникальное имя
-                        const finalName = `${uuidv4()}_${originalFilename}`;
-                        const filePath = path.join(ATTACHMENTS_DIR, finalName);
-                        fs.writeFileSync(filePath, fileResp.data);
-
-                        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
-
-                        keyboard.row().url(`Вложение #${counter}`, publicUrl);
-                        counter++;
-                    } catch (downloadErr) {
-                        console.error('Ошибка скачивания вложения:', downloadErr);
-                    }
-                }
-
-                // Отправляем HTML-текст
-                await ctx.editMessageText(expandedText, {
-                    parse_mode: 'HTML',
-                    reply_markup: keyboard
-                });
-
-            } else {
-                // --------- Сворачиваем ---------
-                const safeTitle = escapeHtml(task.title);
-
-                const collapsedText =
-                    `<b>Задача:</b> ${task.id}\n` +
-                    `<b>Источник:</b> ${task.source}\n` +
-                    `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a>\n` +
-                    `<b>Описание:</b> ${safeTitle}\n` +
-                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
-                    `<b>Тип задачи:</b> ${task.issueType}`;
-
-                const keyboard = new InlineKeyboard();
-                if (task.department === "Техническая поддержка") {
-                    keyboard
-                        .text('Взять в работу', `take_task:${task.id}`)
-                        .url('Перейти к задаче', taskUrl)
-                        .text('Подробнее', `toggle_description:${task.id}`);
-                } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
-                    keyboard
-                        .url('Перейти к задаче', taskUrl)
-                        .text('Подробнее', `toggle_description:${task.id}`);
-                }
-
-                await ctx.editMessageText(collapsedText, {
-                    parse_mode: 'HTML',
-                    reply_markup: keyboard
-                });
-            }
+            // Редактируем
+            await ctx.editMessageText(expandedText, {
+                parse_mode: 'HTML',
+                reply_markup: keyboard
+            });
         });
-    } catch (error) {
-        console.error('Ошибка при обработке toggle_description:', error);
+    } catch (err) {
+        console.error('Ошибка show_description:', err);
         await ctx.reply('Произошла ошибка.');
     }
 });
 
+// hide_description:(.+)
+bot.callbackQuery(/^hide_description:(.+)$/, async (ctx) => {
+    try {
+        await ctx.answerCallbackQuery();
+        const taskId = ctx.match[1];
+
+        db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
+            if (err || !task) {
+                console.error('Ошибка при получении задачи:', err);
+                await ctx.reply('Произошла ошибка.');
+                return;
+            }
+
+            if (!task) {
+                return ctx.reply('Задача не найдена.');
+            }
+
+            // Строим "свёрнутый" HTML-текст
+            const collapsedText = buildCollapsedText(task);
+
+            // Кнопки
+            const keyboard = new InlineKeyboard();
+            const taskUrl = getTaskUrl(task.source, task.id);
+
+            if (task.department === "Техническая поддержка") {
+                keyboard
+                    .text('Взять в работу', `take_task:${task.id}`)
+                    .url('Перейти к задаче', taskUrl)
+                    .text('Подробнее', `show_description:${task.id}`);
+            } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
+                keyboard
+                    .url('Перейти к задаче', taskUrl)
+                    .text('Подробнее', `show_description:${task.id}`);
+            }
+
+            await ctx.editMessageText(collapsedText, {
+                parse_mode: 'HTML',
+                reply_markup: keyboard
+            });
+        });
+    } catch (err) {
+        console.error('Ошибка hide_description:', err);
+        await ctx.reply('Произошла ошибка.');
+    }
+});
 
 // ----------------------------------------------------------------------------------
 // 10) РАСПИСАНИЕ НОЧНОЙ И УТРЕННЕЙ СМЕНЫ
@@ -713,7 +698,7 @@ bot.command('start', async (ctx) => {
         morningShiftCron.start();
     }
 
-    // Debug вывода количества task_comments
+    // Debug
     db.all('SELECT taskId FROM task_comments', [], async (err, rows) => {
         if (err) {
             console.error('Error fetching task_comments:', err);
