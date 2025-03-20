@@ -477,7 +477,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Получаем полное описание и вложения из Jira
+            // Получаем данные задачи из Jira
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
                 await ctx.reply('Ошибка загрузки данных из Jira.');
@@ -488,21 +488,10 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
-            // Проверяем, развернуто ли описание
-
-            console.log("CTX OBJECT:", ctx);
-            console.log("CTX MESSAGE:", ctx.message);
-            console.log("CTX MESSAGE TEXT:", ctx.message?.text);
-
-            const isExpanded = ctx.message.text.includes(fullDescription.substring(0, 20));
+            // Проверяем, развернуто ли описание (исправленный код)
+            const isExpanded = ctx.callbackQuery.message?.text?.includes(fullDescription.substring(0, 20));
 
             if (!isExpanded) {
-                // Загружаем вложения (изображения, видео)
-                const attachments = issue.fields.attachment.map(att => ({
-                    type: att.mimeType.startsWith('image/') ? 'photo' : 'video',
-                    media: att.content
-                }));
-
                 const expandedText = `📌 *Задача:* [${task.id}](${taskUrl})\n` +
                     `📍 *Источник:* ${task.source}\n` +
                     `🔹 *Приоритет:* ${priorityEmoji} ${task.priority}\n` +
@@ -512,10 +501,6 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 const keyboard = new InlineKeyboard()
                     .text('⬆ Скрыть', `toggle_description:${task.id}`)
                     .url('📌 Открыть в Jira', taskUrl);
-
-                if (attachments.length > 0) {
-                    await ctx.replyWithMediaGroup(attachments);
-                }
 
                 await ctx.editMessageText(expandedText, {
                     parse_mode: 'Markdown',
@@ -545,70 +530,6 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     }
 });
 
-//---------------------------------------------------------------------
-// Функция для обновления статуса задачи в Jira
-//---------------------------------------------------------------------
-async function updateJiraTaskStatus(source, taskId, telegramUsername) {
-    try {
-        let transitionId;
-        if (source === 'sxl') {
-            transitionId = '221'; // Транзишен для sxl
-        } else if (source === 'betone') {
-            transitionId = '201'; // Транзишен для betone
-        } else {
-            console.error('Invalid source specified');
-            return false;
-        }
-
-        const jiraUsername = jiraUserMappings[telegramUsername]?.[source];
-        if (!jiraUsername) {
-            console.error(`No Jira username mapping found for Telegram username: ${telegramUsername}`);
-            return false;
-        }
-
-        // Назначаем исполнителя
-        const assigneeUrl = `https://jira.${source}.team/rest/api/2/issue/${taskId}/assignee`;
-        const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
-
-        const assigneeResponse = await axios.put(
-            assigneeUrl,
-            { name: jiraUsername },
-            {
-                headers: {
-                    'Authorization': `Bearer ${pat}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-
-        if (assigneeResponse.status !== 204) {
-            console.error(`Error assigning Jira task: ${assigneeResponse.status}`);
-            return false;
-        }
-
-        // Делаем транзишен
-        const transitionUrl = `https://jira.${source}.team/rest/api/2/issue/${taskId}/transitions`;
-        const transitionResponse = await axios.post(
-            transitionUrl,
-            {
-                transition: {
-                    id: transitionId
-                }
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${pat}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-
-        return transitionResponse.status === 204;
-    } catch (error) {
-        console.error(`Error updating ${source} Jira task:`, error);
-        return false;
-    }
-}
 
 //---------------------------------------------------------------------
 // Интеграция с Confluence для определения дежурного специалиста
