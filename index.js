@@ -22,6 +22,44 @@ function getMoscowTimestamp() {
     return DateTime.now().setZone('Europe/Moscow').toFormat('yyyy-MM-dd HH:mm:ss');
 }
 
+// 1️⃣ Создаём колонку для отложенного удаления, если её нет
+db.serialize(() => {
+    db.run(`ALTER TABLE tasks ADD COLUMN markedForDeletion DATETIME DEFAULT NULL`, [], (err) => {
+        if (err && !err.message.includes("duplicate column name")) {
+            console.error("Ошибка добавления колонки markedForDeletion:", err);
+        }
+    });
+});
+
+// 2️⃣ Помечаем задачи на удаление, а не удаляем сразу
+async function markTasksForDeletion(source, fetchedTaskIds) {
+    return new Promise((resolve, reject) => {
+        const placeholders = fetchedTaskIds.map(() => '?').join(',');
+        db.run(
+            `UPDATE tasks SET markedForDeletion = ? WHERE id NOT IN (${placeholders}) AND source = ?`,
+            [getMoscowTimestamp(), ...fetchedTaskIds, source],
+            function (err) {
+                if (err) reject(err);
+                else resolve();
+            }
+        );
+    });
+}
+
+// 3️⃣ Удаляем задачи только если они устарели больше 3 дней
+async function deleteOldTasks() {
+    return new Promise((resolve, reject) => {
+        db.run(
+            `DELETE FROM tasks WHERE markedForDeletion IS NOT NULL 
+             AND markedForDeletion < datetime('now', '-3 days')`,
+            function (err) {
+                if (err) reject(err);
+                else resolve();
+            }
+        );
+    });
+}
+
 // Создаём нужные таблицы в SQLite
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS tasks (
@@ -184,16 +222,17 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
             },
             params: { jql }
         });
+
         console.log(`${source} Jira API response:`, response.data);
 
         const fetchedTaskIds = response.data.issues.map(i => i.key);
 
-        // Удаляем из локальной БД лишние
+        // ✅ 1) Помечаем лишние задачи на удаление (но НЕ удаляем сразу!)
         await new Promise((resolve, reject) => {
             const placeholders = fetchedTaskIds.map(() => '?').join(',');
             db.run(
-                `DELETE FROM tasks WHERE id NOT IN (${placeholders}) AND source = ?`,
-                [...fetchedTaskIds, source],
+                `UPDATE tasks SET markedForDeletion = ? WHERE id NOT IN (${placeholders}) AND source = ?`,
+                [getMoscowTimestamp(), ...fetchedTaskIds, source],
                 function(err) {
                     if (err) {
                         reject(err);
@@ -204,7 +243,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
             );
         });
 
-        // Обновляем / добавляем задачи
+        // ✅ 2) Обновляем / добавляем задачи
         for (const issue of response.data.issues) {
             const task = {
                 id: issue.key,
@@ -232,20 +271,35 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
             });
 
             if (existingTask) {
+                // ✅ Если задача уже есть, обновляем данные и снимаем флаг удаления
                 db.run(
-                    `UPDATE tasks SET title=?, priority=?, issueType=?, department=?, source=? WHERE id=?`,
+                    `UPDATE tasks SET title=?, priority=?, issueType=?, department=?, source=?, markedForDeletion=NULL WHERE id=?`,
                     [task.title, task.priority, task.issueType, task.department, task.source, task.id]
                 );
             } else {
+                // ✅ Если задачи нет в БД, добавляем новую
                 db.run(
-                    `INSERT INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source)
-                     VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
+                    `INSERT INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source, markedForDeletion)
+                     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL)`,
                     [task.id, task.title, task.priority, task.issueType, task.department, task.dateAdded, task.source]
                 );
             }
         }
+
+        // ✅ 3) Удаляем задачи, которые помечены более 3 дней назад
+        await new Promise((resolve, reject) => {
+            db.run(
+                `DELETE FROM tasks WHERE markedForDeletion IS NOT NULL 
+                 AND markedForDeletion < datetime('now', '-3 days')`,
+                function(err) {
+                    if (err) reject(err);
+                    else resolve();
+                }
+            );
+        });
+
     } catch (error) {
-        console.error(`Error fetching and storing tasks from ${source} Jira:`, error);
+        console.error(`Ошибка при получении задач из ${source} Jira:`, error);
     }
 }
 
@@ -464,8 +518,12 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
                         `Отдел: ${task.department}\n` +
                         `Взял в работу: ${displayName}`;
 
+                    const keyboard = new InlineKeyboard()
+                        .url('Перейти к задаче', getTaskUrl(task.source, task.id))
+                        .text('Подробнее', `toggle_description:${task.id}`);
+
                     try {
-                        await ctx.editMessageText(msg);
+                        await ctx.editMessageText(msg, { reply_markup: keyboard });
                     } catch (e) {
                         console.error('Ошибка editMessageText:', e);
                     }
