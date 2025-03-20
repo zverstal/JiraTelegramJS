@@ -595,8 +595,8 @@ function parseCustomMarkdown(text) {
     text = convertCodeBlocks(text);
 
     return text
-        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **Жирный**
-        .replace(/\*(.*?)\*/g, '<i>$1</i>')      // *Курсив*
+        .replace(/\*(.*?)\*/g, '<b>$1</b>')  // **Жирный**
+        .replace(/_(.*?)_/g, '<i>$1</i>')      // *Курсив*
         .replace(/__(.*?)__/g, '<u>$1</u>')      // __Подчеркнутый__
         .replace(/~~(.*?)~~/g, '<s>$1</s>')      // ~~Зачеркнутый~~
         .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') // `Инлайн-код`
