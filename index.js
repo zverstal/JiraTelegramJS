@@ -574,23 +574,54 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.answerCallbackQuery();
         const taskId = ctx.match[1];
 
+        // 1) Сначала ищем задачу в локальной БД
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err) {
                 console.error('Ошибка при получении задачи из базы:', err);
                 await ctx.reply('Произошла ошибка.');
                 return;
             }
+
+            // 2) Если задачи нет в БД, загружаем из Jira API
             if (!task) {
-                await ctx.reply('Задача не найдена.');
-                return;
+                console.log(`Задача ${taskId} не найдена в локальной БД. Запрашиваем в Jira...`);
+                const issue = await getJiraTaskDetailsFromAPI(taskId);
+
+                if (!issue) {
+                    await ctx.reply(`Задача ${taskId} не найдена в Jira.`);
+                    return;
+                }
+
+                // 3) Если нашли в Jira, добавляем в БД
+                task = {
+                    id: issue.id,
+                    title: issue.fields.summary || 'Нет заголовка',
+                    priority: issue.fields.priority?.name || 'Не указан',
+                    issueType: issue.fields.issuetype?.name || 'Не указан',
+                    department: issue.fields.customfield_10500?.value || 'Не указан',
+                    source: issue.source || 'sxl', // По умолчанию ставим sxl
+                    dateAdded: new Date().toISOString()
+                };
+
+                db.run(
+                    `INSERT INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source)
+                     VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
+                    [task.id, task.title, task.priority, task.issueType, task.department, task.dateAdded, task.source],
+                    (dbErr) => {
+                        if (dbErr) console.error('Ошибка при добавлении задачи в БД:', dbErr);
+                        else console.log(`Задача ${taskId} добавлена в локальную БД.`);
+                    }
+                );
             }
 
+            // 4) Достаём детали из Jira (если нужно)
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
-                await ctx.reply('Не удалось загрузить данные из Jira.');
+                await ctx.reply(`Не удалось загрузить данные из Jira по задаче ${task.id}.`);
                 return;
             }
 
+            // 5) Формируем данные задачи
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
@@ -604,6 +635,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             const isExpanded = currentText.endsWith("...");
 
             if (!isExpanded) {
+                // ---------- Разворачиваем ----------
                 const expandedText = 
                     `<b>Задача:</b> ${task.id}\n` +
                     `<b>Источник:</b> ${task.source}\n` +
@@ -654,6 +686,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 });
 
             } else {
+                // ---------- Сворачиваем ----------
                 const collapsedText = 
                     `<b>Задача:</b> ${task.id}\n` +
                     `<b>Источник:</b> ${task.source}\n` +
@@ -686,6 +719,32 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.reply('Произошла ошибка при обработке вашего запроса.');
     }
 });
+
+// Функция запроса задачи из Jira API
+async function getJiraTaskDetailsFromAPI(taskId) {
+    try {
+        const sources = ['sxl', 'betone']; // Проверяем в обоих источниках
+
+        for (const source of sources) {
+            const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}`;
+            const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
+
+            const response = await axios.get(url, {
+                headers: {
+                    'Authorization': `Bearer ${pat}`,
+                    'Accept': 'application/json'
+                }
+            });
+
+            if (response.data) {
+                return { ...response.data, source };
+            }
+        }
+    } catch (error) {
+        console.error(`Ошибка при получении задачи ${taskId} из Jira:`, error);
+    }
+    return null;
+}
 
 
 // ----------------------------------------------------------------------------------
