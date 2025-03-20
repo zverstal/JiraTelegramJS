@@ -530,16 +530,11 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // 8) КНОПКА "ПОДРОБНЕЕ" / "СКРЫТЬ", С СОХРАНЕНИЕМ ВЛОЖЕНИЙ НА СЕРВЕРЕ
 // ----------------------------------------------------------------------------------
 // Обработчик кнопки "Подробнее/Скрыть"
-// Обработчик кнопки "Подробнее/Скрыть"
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
-        // Ответ на колбэк (обязательно, чтобы не "висела" анимация)
         await ctx.answerCallbackQuery();
-
-        // Вычисляем taskId из callback_data
         const taskId = ctx.match[1];
 
-        // Достаём задачу из локальной БД
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err || !task) {
                 console.error('Ошибка при получении задачи:', err);
@@ -547,61 +542,58 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Получаем из Jira детальную информацию (summary, description, attachments)
+            // Получаем данные задачи из Jira
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
                 await ctx.reply('Не удалось загрузить данные из Jira.');
                 return;
             }
 
-            // Извлекаем нужные поля
+            // Извлекаем поля
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
-            // ---------- Функции экранирования MarkdownV2 ----------
-            // 1) Экранируем большинство спецсимволов
-            // 2) Отдельно экранируем дефис (чтобы не путать его в классе)
-            function escapeMarkdownV2(text) {
-                let escaped = text.replace(/([\_\*\[\]\(\)~`>#+=\|\{\}\.\!])/g, '\\$1');
-                escaped = escaped.replace(/-/g, '\\-');
-                return escaped;
+            // ------ Функция "экранирования" для HTML ------
+            // Нужно превратить <, >, & в &lt;, &gt;, &amp;
+            // чтобы Telegram не подумал, что это HTML-тэги.
+            function escapeHtml(text) {
+                return text
+                  .replace(/&/g, '&amp;')
+                  .replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;');
             }
 
-            // Отдельная функция для URL (скобки в ссылке)
-            function escapeURL(url) {
-                return url.replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-            }
+            // Экранируем потенциально опасные поля
+            const safeSummary = escapeHtml(summary);
+            const safeDescription = escapeHtml(fullDescription);
 
-            // Экранируем возможные поля (summary, description)
-            const safeSummary = escapeMarkdownV2(summary);
-            const safeDescription = escapeMarkdownV2(fullDescription);
-            // Если URL содержит скобки – тоже экранируем
-            const safeTaskUrl = escapeURL(taskUrl);
-
-            // Проверяем, свернуто ли описание (ищем часть summary в тексте)
+            // Проверяем, развернуто ли
             const isExpanded = ctx.callbackQuery.message?.text?.includes(safeSummary.substring(0, 10));
 
             if (!isExpanded) {
-                // ---------- РАЗВОРАЧИВАЕМ ОПИСАНИЕ ----------
-                // Собираем текст в стиле MarkdownV2
-                // Жирный (*...*), ссылка ([ ... ](...))
+                // --------- Разворачиваем ---------
+                // Формируем HTML-текст
+                // Вместо <br> используем \n – Telegram в режиме HTML
+                // зачастую просто выводит пробел, но иногда обрабатывает перенос.
+                // Убедимся, что нужна именно такая логика – иначе придётся
+                // разбивать на несколько сообщений.
                 const expandedText =
-                    `*Задача:* [${task.id}](${safeTaskUrl})\n` +
-                    `*Источник:* ${task.source}\n` +
-                    `*Приоритет:* ${priorityEmoji} ${task.priority}\n` +
-                    `*Тип:* ${task.issueType}\n` +
-                    `*Заголовок:* ${safeSummary}\n\n` +
-                    `*Описание:* ${safeDescription}`;
+                    `<b>Задача:</b> ${task.id}\n` +
+                    `<b>Источник:</b> ${task.source}\n` +
+                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
+                    `<b>Тип:</b> ${task.issueType}\n` +
+                    `<b>Заголовок:</b> ${safeSummary}\n\n` +
+                    `<b>Описание:</b> ${safeDescription}`;
 
                 // Кнопки
                 const keyboard = new InlineKeyboard()
                     .text('Скрыть', `toggle_description:${task.id}`)
-                    // Можно не экранировать taskUrl в кнопке:
+                    // Можно напрямую ставить URL
                     .url('Открыть в Jira', taskUrl);
 
-                // Скачиваем вложения (если есть), создаём ссылки
+                // Обрабатываем вложения
                 const attachments = issue.fields.attachment || [];
                 let counter = 1;
                 for (const att of attachments) {
@@ -617,8 +609,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                             }
                         });
 
-                        // Оригинальное имя файла, слегка "почистим"
                         let originalFilename = att.filename || 'file.bin';
+                        // "чистим" имя от опасных символов
                         originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
 
                         // Генерируем уникальное имя
@@ -626,10 +618,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                         const filePath = path.join(ATTACHMENTS_DIR, finalName);
                         fs.writeFileSync(filePath, fileResp.data);
 
-                        // Формируем публичную ссылку
                         const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
 
-                        // Добавляем кнопку "Вложение #n"
                         keyboard.row().url(`Вложение #${counter}`, publicUrl);
                         counter++;
                     } catch (downloadErr) {
@@ -637,25 +627,23 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     }
                 }
 
-                // Редактируем сообщение, подставляя текст + кнопки
+                // Отправляем HTML-текст
                 await ctx.editMessageText(expandedText, {
-                    parse_mode: 'MarkdownV2',
+                    parse_mode: 'HTML',
                     reply_markup: keyboard
                 });
 
             } else {
-                // ---------- СВЁРТЫВАЕМ ОПИСАНИЕ ----------
-                // Экранируем task.title (если оно может содержать опасные символы)
-                const safeTitle = escapeMarkdownV2(task.title);
+                // --------- Сворачиваем ---------
+                const safeTitle = escapeHtml(task.title);
 
-                // Формируем "свернутый" вариант, без подробного описания
                 const collapsedText =
-                    `*Задача:* ${task.id}\n` +
-                    `*Источник:* ${task.source}\n` +
-                    `*Ссылка:* [${safeTaskUrl}](${safeTaskUrl})\n` +
-                    `*Описание:* ${safeTitle}\n` +
-                    `*Приоритет:* ${priorityEmoji} ${task.priority}\n` +
-                    `*Тип задачи:* ${task.issueType}`;
+                    `<b>Задача:</b> ${task.id}\n` +
+                    `<b>Источник:</b> ${task.source}\n` +
+                    `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a>\n` +
+                    `<b>Описание:</b> ${safeTitle}\n` +
+                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
+                    `<b>Тип задачи:</b> ${task.issueType}`;
 
                 const keyboard = new InlineKeyboard();
                 if (task.department === "Техническая поддержка") {
@@ -670,7 +658,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 }
 
                 await ctx.editMessageText(collapsedText, {
-                    parse_mode: 'MarkdownV2',
+                    parse_mode: 'HTML',
                     reply_markup: keyboard
                 });
             }
