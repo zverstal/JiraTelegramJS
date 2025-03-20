@@ -581,7 +581,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             const taskUrl = getTaskUrl(task.source, task.id);
 
             const expandedMarker = "  ";  // Два пробела – развернутое состояние
-            const collapsedMarker = " ";  // Один пробел – свернутое состояние
+            const collapsedMarker = ".";  // Один пробел – свернутое состояние
 
             const safeSummary = escapeHtml(summary);
             const safeTitle = escapeHtml(task.title);
