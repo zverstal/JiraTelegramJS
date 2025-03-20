@@ -530,11 +530,16 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // 8) КНОПКА "ПОДРОБНЕЕ" / "СКРЫТЬ", С СОХРАНЕНИЕМ ВЛОЖЕНИЙ НА СЕРВЕРЕ
 // ----------------------------------------------------------------------------------
 // Обработчик кнопки "Подробнее/Скрыть"
+// Обработчик кнопки "Подробнее/Скрыть"
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
+        // Ответ на колбэк (обязательно, чтобы не "висела" анимация)
         await ctx.answerCallbackQuery();
+
+        // Вычисляем taskId из callback_data
         const taskId = ctx.match[1];
 
+        // Достаём задачу из локальной БД
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err || !task) {
                 console.error('Ошибка при получении задачи:', err);
@@ -542,48 +547,46 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Полные данные задачи из Jira
+            // Получаем из Jira детальную информацию (summary, description, attachments)
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
                 await ctx.reply('Не удалось загрузить данные из Jira.');
                 return;
             }
 
-            // Достаём поля
+            // Извлекаем нужные поля
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
             // ---------- Функции экранирования MarkdownV2 ----------
+            // 1) Экранируем большинство спецсимволов
+            // 2) Отдельно экранируем дефис (чтобы не путать его в классе)
             function escapeMarkdownV2(text) {
-                // Сначала экранируем все символы КРОМЕ дефиса:
                 let escaped = text.replace(/([\_\*\[\]\(\)~`>#+=\|\{\}\.\!])/g, '\\$1');
-                // Затем – отдельно дефис:
                 escaped = escaped.replace(/-/g, '\\-');
                 return escaped;
-              }
-              
+            }
 
+            // Отдельная функция для URL (скобки в ссылке)
             function escapeURL(url) {
-                // в ссылке особенно важны скобки
                 return url.replace(/\(/g, '\\(').replace(/\)/g, '\\)');
             }
 
-            // Экранируем поля
+            // Экранируем возможные поля (summary, description)
             const safeSummary = escapeMarkdownV2(summary);
             const safeDescription = escapeMarkdownV2(fullDescription);
-
-            // Для URL (если могут быть скобки)
+            // Если URL содержит скобки – тоже экранируем
             const safeTaskUrl = escapeURL(taskUrl);
 
-            // Проверяем, развернуто ли
-            // Возьмем часть summary и проверим, есть ли она в тексте сообщения
+            // Проверяем, свернуто ли описание (ищем часть summary в тексте)
             const isExpanded = ctx.callbackQuery.message?.text?.includes(safeSummary.substring(0, 10));
 
             if (!isExpanded) {
-                // ---------- РАЗВОРАЧИВАЕМ ----------
-                // Формируем многострочный текст с жирным, ссылками, переносами
+                // ---------- РАЗВОРАЧИВАЕМ ОПИСАНИЕ ----------
+                // Собираем текст в стиле MarkdownV2
+                // Жирный (*...*), ссылка ([ ... ](...))
                 const expandedText =
                     `*Задача:* [${task.id}](${safeTaskUrl})\n` +
                     `*Источник:* ${task.source}\n` +
@@ -592,12 +595,13 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     `*Заголовок:* ${safeSummary}\n\n` +
                     `*Описание:* ${safeDescription}`;
 
-                // Готовим кнопки
+                // Кнопки
                 const keyboard = new InlineKeyboard()
                     .text('Скрыть', `toggle_description:${task.id}`)
-                    .url('Открыть в Jira', taskUrl); // URL тут можно не экранировать, т.к. это ссылка в кнопке
+                    // Можно не экранировать taskUrl в кнопке:
+                    .url('Открыть в Jira', taskUrl);
 
-                // Скачиваем вложения, создаём ссылки
+                // Скачиваем вложения (если есть), создаём ссылки
                 const attachments = issue.fields.attachment || [];
                 let counter = 1;
                 for (const att of attachments) {
@@ -613,9 +617,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                             }
                         });
 
-                        // Имя файла
+                        // Оригинальное имя файла, слегка "почистим"
                         let originalFilename = att.filename || 'file.bin';
-                        // Слегка «очищаем»
                         originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
 
                         // Генерируем уникальное имя
@@ -623,9 +626,10 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                         const filePath = path.join(ATTACHMENTS_DIR, finalName);
                         fs.writeFileSync(filePath, fileResp.data);
 
+                        // Формируем публичную ссылку
                         const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
 
-                        // Кнопка со ссылкой на вложение
+                        // Добавляем кнопку "Вложение #n"
                         keyboard.row().url(`Вложение #${counter}`, publicUrl);
                         counter++;
                     } catch (downloadErr) {
@@ -633,15 +637,18 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     }
                 }
 
+                // Редактируем сообщение, подставляя текст + кнопки
                 await ctx.editMessageText(expandedText, {
                     parse_mode: 'MarkdownV2',
                     reply_markup: keyboard
                 });
 
             } else {
-                // ---------- СВЁРТЫВАЕМ ----------
-                // Экранируем краткое описание (title)
+                // ---------- СВЁРТЫВАЕМ ОПИСАНИЕ ----------
+                // Экранируем task.title (если оно может содержать опасные символы)
                 const safeTitle = escapeMarkdownV2(task.title);
+
+                // Формируем "свернутый" вариант, без подробного описания
                 const collapsedText =
                     `*Задача:* ${task.id}\n` +
                     `*Источник:* ${task.source}\n` +
@@ -673,6 +680,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.reply('Произошла ошибка.');
     }
 });
+
 
 // ----------------------------------------------------------------------------------
 // 10) РАСПИСАНИЕ НОЧНОЙ И УТРЕННЕЙ СМЕНЫ
