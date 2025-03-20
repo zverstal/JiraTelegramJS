@@ -800,49 +800,56 @@ bot.command('duty', async (ctx) => {
 });
 
 // ----------------------------------------------------------------------------------
-// 10) РАСПИСАНИЕ НОЧНОЙ И УТРЕННЕЙ СМЕНЫ
+// 10 и 11) СТАРТ БОТА С АВТОЗАПУСКОМ ЗАДАЧ И ВОЗМОЖНОСТЬЮ РУЧНОГО ПЕРЕЗАПУСКА
 // ----------------------------------------------------------------------------------
+
 let interval = null;
 let nightShiftCron = null;
 let morningShiftCron = null;
 
-bot.command('start', async (ctx) => {
-    await ctx.reply('Привет! Каждую минуту я буду проверять новые задачи...');
+async function initializeBotTasks() {
+    console.log('[BOT INIT] Автоматический запуск задач...');
 
     if (!interval) {
         interval = setInterval(async () => {
             console.log('Interval triggered. Fetching + Sending Jira tasks...');
             await fetchAndStoreJiraTasks();
+
+            const ctx = { reply: (text, opts) => bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, opts) };
             await sendJiraTasks(ctx);
             console.log('Jira tasks sent.');
         }, 60000);
-    } else {
-        await ctx.reply('Интервал уже запущен.');
     }
 
     if (!nightShiftCron) {
         nightShiftCron = cron.schedule('0 1 * * *', async () => {
             await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, 'Доброй ночи! Заполни тикет передачи смены.');
         }, { scheduled: true, timezone: 'Europe/Moscow' });
-
-        if (!morningShiftCron) {
-            morningShiftCron = cron.schedule('0 10 * * *', async () => {
-                try {
-                    const engineer = await fetchDutyEngineer();
-                    await bot.api.sendMessage(
-                        process.env.ADMIN_CHAT_ID,
-                        `Доброе утро! Проверь задачи.\nДежурный специалист: ${engineer}`
-                    );
-                } catch (err) {
-                    console.error('Ошибка при получении дежурного:', err);
-                }
-            }, { scheduled: true, timezone: 'Europe/Moscow' });
-        }
-        nightShiftCron.start();
-        morningShiftCron.start();
     }
 
-    // Debug вывода количества task_comments
+    if (!morningShiftCron) {
+        morningShiftCron = cron.schedule('0 10 * * *', async () => {
+            try {
+                const engineer = await fetchDutyEngineer();
+                await bot.api.sendMessage(
+                    process.env.ADMIN_CHAT_ID,
+                    `Доброе утро! Проверь задачи.\nДежурный специалист: ${engineer}`
+                );
+            } catch (err) {
+                console.error('Ошибка при получении дежурного:', err);
+            }
+        }, { scheduled: true, timezone: 'Europe/Moscow' });
+    }
+
+    cron.schedule('*/5 * * * *', () => {
+        console.log('Checking for new comments...');
+        checkForNewComments();
+    });
+
+    await fetchAndStoreJiraTasks();
+    const ctx = { reply: (text, opts) => bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, opts) };
+    await sendJiraTasks(ctx);
+
     db.all('SELECT taskId FROM task_comments', [], async (err, rows) => {
         if (err) {
             console.error('Error fetching task_comments:', err);
@@ -850,9 +857,19 @@ bot.command('start', async (ctx) => {
         }
         console.log(`Total task_comments in database: ${rows.length}`);
     });
+
+    console.log('[BOT INIT] Все задачи успешно запущены.');
+}
+
+bot.command('start', async (ctx) => {
+    await ctx.reply('✅ Бот уже работает. Все задачи запущены. Если хочешь запустить задачи повторно, используй /forcestart');
 });
 
-// ----------------------------------------------------------------------------------
-// 11) СТАРТ БОТА
-// ----------------------------------------------------------------------------------
-bot.start();
+bot.command('forcestart', async (ctx) => {
+    await initializeBotTasks();
+    await ctx.reply('♻️ Все задачи были запущены повторно вручную.');
+});
+
+bot.start({
+    onStart: initializeBotTasks
+});
