@@ -533,18 +533,20 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 function escapeHtml(text) {
     return text
         .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
+        .replace(/</g, '<')
+        .replace(/>/g, '>');
 }
 
 // Функция обработки блоков кода (Удаляет спойлеры ВНУТРИ кода)
 function convertCodeBlocks(text) {
     return text
         .replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (match, lang, code) => {
-            code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1')); // Убираем спойлеры
+            // Убираем спойлеры внутри блока кода
+            code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1'));
             return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
         })
         .replace(/\{code\}([\s\S]*?)\{code\}/g, (match, code) => {
+            // Убираем спойлеры внутри блока кода
             code = escapeHtml(code.replace(/\|\|([^|]+)\|\|/g, '$1'));
             return `<pre><code>${code.trim()}</code></pre>`;
         });
@@ -554,9 +556,13 @@ function convertCodeBlocks(text) {
 function parseCustomMarkdown(text) {
     if (!text) return '';
 
-    // Обрабатываем код перед Markdown
+    // Сначала обрабатываем спойлеры
+    text = text.replace(/\|\|([^|]+)\|\|/g, '<tg-spoiler>$1</tg-spoiler>');
+
+    // Затем обрабатываем блоки кода
     text = convertCodeBlocks(text);
 
+    // Обрабатываем остальные элементы Markdown
     return text
         .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **Жирный**
         .replace(/\*(.*?)\*/g, '<i>$1</i>')      // *Курсив*
@@ -565,7 +571,6 @@ function parseCustomMarkdown(text) {
         .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') // `Инлайн-код`
         .replace(/^\-\s(.*)/gm, '• $1')         // - Маркерный список
         .replace(/^\d+\.\s(.*)/gm, '🔹 $1')     // 1. Нумерованный список
-        .replace(/\|\|([^|]+)\|\|/g, '<tg-spoiler>$1</tg-spoiler>') // Спойлер
         .replace(/\|(.+?)\|/g, (match, content) => { // Таблицы
             const cells = content.split('|').map(cell => cell.trim());
             return cells.map((cell, index) => (index === 0 ? `<b>${cell}</b>` : cell)).join(' | ');
