@@ -646,6 +646,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                         `...`;
 
                     const keyboard = new InlineKeyboard()
+                        console.log()
                         .text('Скрыть', `toggle_description:${task.id}`)
                         .url('Открыть в Jira', taskUrl);
 
