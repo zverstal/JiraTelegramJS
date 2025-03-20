@@ -532,11 +532,9 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
 // Обработчик кнопки "Подробнее/Скрыть"
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
-        // Обязательно отвечаем на колбэк
         await ctx.answerCallbackQuery();
         const taskId = ctx.match[1];
 
-        // Ищем задачу в локальной БД
         db.get('SELECT * FROM tasks WHERE id = ?', [taskId], async (err, task) => {
             if (err || !task) {
                 console.error('Ошибка при получении задачи:', err);
@@ -544,56 +542,62 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
-            // Получаем из Jira полные данные: summary, description, attachment
+            // Полные данные задачи из Jira
             const issue = await getJiraTaskDetails(task.source, task.id);
             if (!issue) {
                 await ctx.reply('Не удалось загрузить данные из Jira.');
                 return;
             }
 
-            // Достаём поля задачи
+            // Достаём поля
             const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
             const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
-            // Проверяем, развернуто ли
-            // (можно проверять по summary.substring, или любой другой признак)
-            const isExpanded = ctx.callbackQuery.message?.text?.includes(summary.substring(0, 10));
-
-            // Функция для экранирования опасных символов
-            // (иначе <, >, & сломают HTML)
-            function escapeHtml(text) {
-                return text
-                    .replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;");
+            // ---------- Функции экранирования MarkdownV2 ----------
+            function escapeMarkdownV2(text) {
+                // экранируем все спецсимволы
+                return text.replace(/([\_\*\[\]\(\)~`>#+\-=|{}\.!])/g, '\\$1');
             }
 
+            function escapeURL(url) {
+                // в ссылке особенно важны скобки
+                return url.replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+            }
+
+            // Экранируем поля
+            const safeSummary = escapeMarkdownV2(summary);
+            const safeDescription = escapeMarkdownV2(fullDescription);
+
+            // Для URL (если могут быть скобки)
+            const safeTaskUrl = escapeURL(taskUrl);
+
+            // Проверяем, развернуто ли
+            // Возьмем часть summary и проверим, есть ли она в тексте сообщения
+            const isExpanded = ctx.callbackQuery.message?.text?.includes(safeSummary.substring(0, 10));
+
             if (!isExpanded) {
-                // ----------- Разворачиваем -----------
-                const safeSummary = escapeHtml(summary);
-                const safeDescription = escapeHtml(fullDescription);
+                // ---------- РАЗВОРАЧИВАЕМ ----------
+                // Формируем многострочный текст с жирным, ссылками, переносами
+                const expandedText =
+                    `*Задача:* [${task.id}](${safeTaskUrl})\n` +
+                    `*Источник:* ${task.source}\n` +
+                    `*Приоритет:* ${priorityEmoji} ${task.priority}\n` +
+                    `*Тип:* ${task.issueType}\n` +
+                    `*Заголовок:* ${safeSummary}\n\n` +
+                    `*Описание:* ${safeDescription}`;
 
-                const expandedText = 
-                    `<b>Задача:</b> <a href="${taskUrl}">${task.id}</a><br>` +
-                    `<b>Источник:</b> ${task.source}<br>` +
-                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}<br>` +
-                    `<b>Тип:</b> ${task.issueType}<br>` +
-                    `<b>Заголовок:</b> ${safeSummary}<br><br>` +
-                    `<b>Описание:</b> ${safeDescription}`;
-
+                // Готовим кнопки
                 const keyboard = new InlineKeyboard()
                     .text('Скрыть', `toggle_description:${task.id}`)
-                    .url('Открыть в Jira', taskUrl);
+                    .url('Открыть в Jira', taskUrl); // URL тут можно не экранировать, т.к. это ссылка в кнопке
 
-                // Скачиваем вложения, сохраняем на сервер, добавляем кнопки-ссылки
+                // Скачиваем вложения, создаём ссылки
                 const attachments = issue.fields.attachment || [];
                 let counter = 1;
-
                 for (const att of attachments) {
                     try {
-                        // Скачиваем файл (buffer) из Jira
                         const fileResp = await axios.get(att.content, {
                             responseType: 'arraybuffer',
                             headers: {
@@ -605,17 +609,19 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                             }
                         });
 
-                        // Исходное имя файла
-                        let originalFilename = att.filename || "file.bin";
-                        originalFilename = originalFilename.replace(/[^\w.\-]/g, "_").substring(0, 100);
+                        // Имя файла
+                        let originalFilename = att.filename || 'file.bin';
+                        // Слегка «очищаем»
+                        originalFilename = originalFilename.replace(/[^\w.\-]/g, '_').substring(0, 100);
 
-                        // Добавляем UUID, чтобы имя было уникальным
+                        // Генерируем уникальное имя
                         const finalName = `${uuidv4()}_${originalFilename}`;
                         const filePath = path.join(ATTACHMENTS_DIR, finalName);
                         fs.writeFileSync(filePath, fileResp.data);
 
                         const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
 
+                        // Кнопка со ссылкой на вложение
                         keyboard.row().url(`Вложение #${counter}`, publicUrl);
                         counter++;
                     } catch (downloadErr) {
@@ -623,23 +629,22 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     }
                 }
 
-                // Редактируем сообщение (HTML + кнопки)
                 await ctx.editMessageText(expandedText, {
-                    parse_mode: 'HTML',
+                    parse_mode: 'MarkdownV2',
                     reply_markup: keyboard
                 });
 
             } else {
-                // ----------- Сворачиваем -----------
-                const safeTitle = escapeHtml(task.title);
-
-                const collapsedText = 
-                    `<b>Задача:</b> ${task.id}<br>` +
-                    `<b>Источник:</b> ${task.source}<br>` +
-                    `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a><br>` +
-                    `<b>Описание:</b> ${safeTitle}<br>` +
-                    `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}<br>` +
-                    `<b>Тип задачи:</b> ${task.issueType}`;
+                // ---------- СВЁРТЫВАЕМ ----------
+                // Экранируем краткое описание (title)
+                const safeTitle = escapeMarkdownV2(task.title);
+                const collapsedText =
+                    `*Задача:* ${task.id}\n` +
+                    `*Источник:* ${task.source}\n` +
+                    `*Ссылка:* [${safeTaskUrl}](${safeTaskUrl})\n` +
+                    `*Описание:* ${safeTitle}\n` +
+                    `*Приоритет:* ${priorityEmoji} ${task.priority}\n` +
+                    `*Тип задачи:* ${task.issueType}`;
 
                 const keyboard = new InlineKeyboard();
                 if (task.department === "Техническая поддержка") {
@@ -654,7 +659,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 }
 
                 await ctx.editMessageText(collapsedText, {
-                    parse_mode: 'HTML',
+                    parse_mode: 'MarkdownV2',
                     reply_markup: keyboard
                 });
             }
