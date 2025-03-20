@@ -526,6 +526,11 @@ async function updateJiraTaskStatus(source, taskId, telegramUsername) {
     }
 }
 
+// Функция экранирования MarkdownV2 (Telegram требует экранирования спецсимволов)
+function escapeMarkdownV2(text) {
+    return text.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1'); // Экранируем спецсимволы
+}
+
 // Функция экранирования HTML
 function escapeHtml(text) {
     return text
@@ -547,25 +552,13 @@ function convertCodeBlocks(text) {
         });
 }
 
-// Функция обработки Telegram Markdown в HTML
+// Функция преобразования Telegram Markdown в HTML
 function parseCustomMarkdown(text) {
     if (!text) return '';
 
-    // Удаляем все спойлеры внутри блоков кода (Telegram их не поддерживает)
-    text = text.replace(/\|\|([^|]+)\|\|/g, '<tg-spoiler>$1</tg-spoiler>');
+    text = text.replace(/\|\|([^|]+)\|\|/g, '<tg-spoiler>$1</tg-spoiler>'); // Спойлер
 
-    // Обрабатываем блоки кода
-    text = convertCodeBlocks(text);
-
-    // Обрабатываем таблицы
-    text = text.replace(/\|\|(.+?)\|\|/g, (match, content) => `<b>${content}</b>`);
-    text = text.replace(/^\|(.+?)\|$/gm, (match, content) => {
-        const cells = content.split('|').map(cell => cell.trim());
-        return `<b>${cells.join(' | ')}</b>`;
-    });
-
-    // Фиксим списки (не должно быть разрывов строк перед тегами)
-    text = text.replace(/\n{3,}/g, '\n\n');
+    text = convertCodeBlocks(text); // Блоки кода
 
     return text
         .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')  // **Жирный**
@@ -638,8 +631,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     });
                 } catch (error) {
                     console.error('Ошибка парсинга Telegram HTML:', error);
-                    await ctx.editMessageText(`⚠ Ошибка парсинга HTML. Отправляю как plain text:\n\n${fullDescription}`, {
-                        parse_mode: 'MarkdownV2' // Используем Markdown, чтобы Telegram не ругался
+                    await ctx.editMessageText(`⚠ Ошибка парсинга HTML. Отправляю как plain text:\n\n${escapeMarkdownV2(fullDescription)}`, {
+                        parse_mode: 'MarkdownV2'
                     });
                 }
 
@@ -672,8 +665,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     });
                 } catch (error) {
                     console.error('Ошибка парсинга Telegram HTML:', error);
-                    await ctx.editMessageText(`⚠ Ошибка парсинга HTML. Отправляю как plain text:\n\n${fullDescription}`, {
-                        parse_mode: 'MarkdownV2' // Используем Markdown, чтобы Telegram не ругался
+                    await ctx.editMessageText(`⚠ Ошибка парсинга HTML. Отправляю как plain text:\n\n${escapeMarkdownV2(fullDescription)}`, {
+                        parse_mode: 'MarkdownV2'
                     });
                 }
             }
