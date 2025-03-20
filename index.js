@@ -484,8 +484,8 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 return;
             }
 
+            const summary = issue.fields.summary || 'Нет заголовка';
             const fullDescription = issue.fields.description || 'Нет описания';
-            const priorityEmoji = getPriorityEmoji(task.priority);
             const taskUrl = getTaskUrl(task.source, task.id);
 
             // Проверяем, развернуто ли описание
@@ -508,12 +508,12 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     }
                 }
 
-                // **🔹 Формируем развернутый текст**
-                const expandedText = `📌 *Задача:* [${task.id}](${taskUrl})\n` +
-                    `📍 *Источник:* ${task.source}\n` +
-                    `🔹 *Приоритет:* ${priorityEmoji} ${task.priority}\n` +
-                    `📖 *Тип:* ${task.issueType}\n\n` +
-                    `📝 *Описание:* ${fullDescription}`;
+                // **🔹 Формируем развернутый текст (с заголовком и описанием)**
+                const expandedText = `Задача: [${task.id}](${taskUrl})\n` +
+                    `Источник: ${task.source}\n` +
+                    `Тип: ${task.issueType}\n` +
+                    `Заголовок: ${summary}\n\n` +
+                    `Описание: ${fullDescription}`;
 
                 const keyboard = new InlineKeyboard()
                     .text('Скрыть', `toggle_description:${task.id}`)
@@ -529,8 +529,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 let collapsedText = `Задача: ${task.id}\n` +
                     `Источник: ${task.source}\n` +
                     `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
-                    `Описание: ${task.title}\n` +
-                    `Приоритет: ${getPriorityEmoji(task.priority)}\n` +
+                    `Заголовок: ${summary}\n` +
                     `Тип задачи: ${task.issueType}`;
 
                 let keyboard = new InlineKeyboard();
@@ -555,6 +554,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.reply('Произошла ошибка.');
     }
 });
+
 
 
 
