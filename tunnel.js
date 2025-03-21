@@ -26,7 +26,7 @@ async function startTunnel() {
     });
 
     // Добавляем явный перезапуск бота через pm2:
-    exec('pm2 restart mybot', (error, stdout, stderr) => {
+    exec('pm2 restart jirabot', (error, stdout, stderr) => {
         if (error) {
             console.error(`Ошибка перезапуска бота: ${error.message}`);
             return;
