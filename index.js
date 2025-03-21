@@ -251,7 +251,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
 
 async function getJiraTaskDetails(source, taskId) {
     try {
-        const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}?fields=summary,description,attachment`;
+        const url = `https://jira.${source}.team/rest/api/2/issue/${taskId}?fields=summary,description,attachment,priority,issuetype,status`;
         const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
 
         const response = await axios.get(url, {
@@ -266,6 +266,7 @@ async function getJiraTaskDetails(source, taskId) {
         return null;
     }
 }
+
 
 // ----------------------------------------------------------------------------------
 // 5) ОТПРАВКА ЗАДАЧ В TELEGRAM
