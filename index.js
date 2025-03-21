@@ -609,19 +609,27 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         let source;
         let issue;
 
+        // Попробуем получить задачу из базы
         if (task) {
             source = task.source;
+            issue = await getJiraTaskDetails(source, taskId);
         }
 
-        issue = await getJiraTaskDetails(source || 'sxl', taskId);
-        if (!issue && !source) {
-            issue = await getJiraTaskDetails('betone', taskId);
+        // Если задачи в базе нет, или не удалось её получить по source, пробуем явно оба источника
+        if (!issue) {
+            issue = await getJiraTaskDetails('sxl', taskId);
             if (issue) {
-                source = 'betone';
+                source = 'sxl';
+            } else {
+                issue = await getJiraTaskDetails('betone', taskId);
+                if (issue) {
+                    source = 'betone';
+                }
             }
         }
 
-        if (!issue) {
+        // Если после попыток задача всё равно не найдена:
+        if (!issue || !source) {
             await ctx.reply('Не удалось загрузить данные из Jira.');
             return;
         }
