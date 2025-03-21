@@ -605,7 +605,23 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             db.get('SELECT * FROM tasks WHERE id = ?', [taskId], (err, row) => resolve(row));
         });
 
-        const issue = await getJiraTaskDetails(task.source, task.id);
+        let source;
+        if (task) {
+            source = task.source;
+        } else {
+            source = 'sxl';
+            let issueCheck = await getJiraTaskDetails(source, taskId);
+            if (!issueCheck) {
+                source = 'betone';
+                issueCheck = await getJiraTaskDetails(source, taskId);
+                if (!issueCheck) {
+                    await ctx.reply('Не удалось загрузить данные из Jira.');
+                    return;
+                }
+            }
+        }
+
+        const issue = await getJiraTaskDetails(source, taskId);
         if (!issue) {
             await ctx.reply('Не удалось загрузить данные из Jira.');
             return;
@@ -613,14 +629,14 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
 
         const summary = issue.fields.summary || 'Нет заголовка';
         const fullDescription = issue.fields.description || 'Нет описания';
-        const priorityEmoji = getPriorityEmoji(issue.fields.priority?.name || task.priority);
-        const taskType = issue.fields.issuetype?.name || task.issueType;
-        const taskUrl = getTaskUrl(task.source, task.id);
+        const priorityEmoji = getPriorityEmoji(issue.fields.priority?.name || task?.priority || 'Не указан');
+        const taskType = issue.fields.issuetype?.name || task?.issueType || 'Не указан';
+        const taskUrl = getTaskUrl(source, taskId);
         const taskStatus = issue.fields.status?.name;
 
         const safeSummary = escapeHtml(summary);
         const safeDescription = formatDescriptionAsHtml(fullDescription);
-        const safeTitle = escapeHtml(task.title);
+        const safeTitle = escapeHtml(task?.title || summary);
 
         const userAction = await new Promise(resolve => {
             db.get('SELECT * FROM user_actions WHERE taskId = ? AND action = "take_task" ORDER BY timestamp DESC LIMIT 1', [taskId], (err, row) => resolve(row));
@@ -634,12 +650,12 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
 
         const keyboard = new InlineKeyboard();
 
-        if (task.department === "Техническая поддержка" && (!isTaken || taskStatus === "Open")) {
-            keyboard.text('Взять в работу', `take_task:${task.id}`);
+        if ((task?.department === "Техническая поддержка") && (!isTaken || taskStatus === "Open")) {
+            keyboard.text('Взять в работу', `take_task:${taskId}`);
         }
 
         keyboard
-            .text(isExpanded ? 'Подробнее' : 'Скрыть', `toggle_description:${task.id}`)
+            .text(isExpanded ? 'Подробнее' : 'Скрыть', `toggle_description:${taskId}`)
             .url('Открыть в Jira', taskUrl);
 
         if (!isExpanded) {
@@ -649,7 +665,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                     const fileResp = await axios.get(att.content, {
                         responseType: 'arraybuffer',
                         headers: {
-                            'Authorization': `Bearer ${task.source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
+                            'Authorization': `Bearer ${source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
                         }
                     });
 
@@ -667,9 +683,9 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             }
 
             await ctx.editMessageText(
-                `<b>Задача:</b> ${task.id}\n` +
-                `<b>Источник:</b> ${task.source}\n` +
-                `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
+                `<b>Задача:</b> ${taskId}\n` +
+                `<b>Источник:</b> ${source}\n` +
+                `<b>Приоритет:</b> ${priorityEmoji}\n` +
                 `<b>Тип задачи:</b> ${taskType}\n` +
                 `<b>Заголовок:</b> ${safeSummary}\n` +
                 `<b>Взята в работу:</b> ${takenBy}\n\n` +
@@ -678,11 +694,11 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             );
         } else {
             await ctx.editMessageText(
-                `<b>Задача:</b> ${task.id}\n` +
-                `<b>Источник:</b> ${task.source}\n` +
+                `<b>Задача:</b> ${taskId}\n` +
+                `<b>Источник:</b> ${source}\n` +
                 `<b>Ссылка:</b> <a href=\"${taskUrl}\">${taskUrl}<\/a>\n` +
                 `<b>Описание:</b> ${safeTitle}\n` +
-                `<b>Приоритет:</b> ${priorityEmoji} ${task.priority}\n` +
+                `<b>Приоритет:</b> ${priorityEmoji}\n` +
                 `<b>Тип задачи:</b> ${taskType}\n` +
                 `<b>Взята в работу:</b> ${takenBy}\n`,
                 { parse_mode: 'HTML', reply_markup: keyboard }
