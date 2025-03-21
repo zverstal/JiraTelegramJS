@@ -610,26 +610,25 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
 
         if (task) {
             source = task.source;
-            issue = await getJiraTaskDetails(source, taskId);
-        } else {
-            issue = await getJiraTaskDetails('sxl', taskId);
+        }
+
+        issue = await getJiraTaskDetails(source || 'sxl', taskId);
+        if (!issue && !source) {
+            issue = await getJiraTaskDetails('betone', taskId);
             if (issue) {
-                source = 'sxl';
-            } else {
-                issue = await getJiraTaskDetails('betone', taskId);
-                if (issue) {
-                    source = 'betone';
-                } else {
-                    await ctx.reply('Не удалось загрузить данные из Jira.');
-                    return;
-                }
+                source = 'betone';
             }
+        }
+
+        if (!issue) {
+            await ctx.reply('Не удалось загрузить данные из Jira.');
+            return;
         }
 
         const summary = issue.fields.summary || 'Нет заголовка';
         const fullDescription = issue.fields.description || 'Нет описания';
-        const priorityEmoji = getPriorityEmoji(issue.fields.priority?.name || task?.priority || 'Не указан');
-        const taskType = issue.fields.issuetype?.name || task?.issueType || 'Не указан';
+        const priorityEmoji = getPriorityEmoji(issue.fields.priority?.name || 'Не указан');
+        const taskType = issue.fields.issuetype?.name || 'Не указан';
         const taskUrl = getTaskUrl(source, taskId);
         const taskStatus = issue.fields.status?.name;
 
