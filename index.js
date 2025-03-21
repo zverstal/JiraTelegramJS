@@ -606,25 +606,24 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         });
 
         let source;
+        let issue;
+
         if (task) {
             source = task.source;
+            issue = await getJiraTaskDetails(source, taskId);
         } else {
-            source = 'sxl';
-            let issueCheck = await getJiraTaskDetails(source, taskId);
-            if (!issueCheck) {
-                source = 'betone';
-                issueCheck = await getJiraTaskDetails(source, taskId);
-                if (!issueCheck) {
+            issue = await getJiraTaskDetails('sxl', taskId);
+            if (issue) {
+                source = 'sxl';
+            } else {
+                issue = await getJiraTaskDetails('betone', taskId);
+                if (issue) {
+                    source = 'betone';
+                } else {
                     await ctx.reply('Не удалось загрузить данные из Jira.');
                     return;
                 }
             }
-        }
-
-        const issue = await getJiraTaskDetails(source, taskId);
-        if (!issue) {
-            await ctx.reply('Не удалось загрузить данные из Jira.');
-            return;
         }
 
         const summary = issue.fields.summary || 'Нет заголовка';
