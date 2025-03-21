@@ -2,12 +2,12 @@ require('dotenv').config();
 const fs = require('fs');
 const localtunnel = require('localtunnel');
 const axios = require('axios');
+const { exec } = require('child_process');
 
 async function startTunnel() {
     const tunnel = await localtunnel({ port: 3000 });
     console.log('Tunnel URL:', tunnel.url);
 
-    // Сохраняем URL в .env-файл
     const envPath = '.env';
     let envContent = fs.readFileSync(envPath, 'utf8');
 
@@ -25,9 +25,18 @@ async function startTunnel() {
         text: `🔗 Туннель обновлён:\n${tunnel.url}`
     });
 
+    // Добавляем явный перезапуск бота через pm2:
+    exec('pm2 restart mybot', (error, stdout, stderr) => {
+        if (error) {
+            console.error(`Ошибка перезапуска бота: ${error.message}`);
+            return;
+        }
+        console.log(`Бот перезапущен: ${stdout}`);
+    });
+
     tunnel.on('close', () => {
         console.log('Tunnel closed');
-        process.exit(1); // pm2 автоматически перезапустит туннель
+        process.exit(1);
     });
 
     tunnel.on('error', (err) => {
