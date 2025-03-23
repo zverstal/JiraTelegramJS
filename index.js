@@ -735,13 +735,20 @@ async function fetchDutyEngineer() {
             }
         });
 
-        const html = resp.data?.body?.view?.value;
+        let html = resp.data?.body?.view?.value;
         if (!html) {
             console.log('Не удалось получить HTML из body.view.value');
             return 'Не найдено';
         }
 
-        // Парсинг строк таблицы с расписанием
+        // Обрезаем HTML до элемента с "2024", чтобы игнорировать расписание 2024 года
+        const marker = '<span class="expand-control-text conf-macro-render">2024</span>';
+        const markerIndex = html.indexOf(marker);
+        if (markerIndex !== -1) {
+            html = html.slice(0, markerIndex);
+        }
+
+        // Парсинг строк таблицы с расписанием для 2025
         const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
         const schedule = [];
         let match;
@@ -762,12 +769,11 @@ async function fetchDutyEngineer() {
         const now = DateTime.now().setZone("Europe/Moscow");
 
         // Определяем начало недели (понедельник) и конец недели (воскресенье)
-        // Luxon по ISO неделя начинается с понедельника
         const startOfWeek = now.startOf('week');
         const endOfWeek = startOfWeek.plus({ days: 6 });
         const currentYear = startOfWeek.year;
 
-        // Ищем запись, где диапазон соответствует текущей неделе
+        // Ищем запись, где диапазон совпадает с текущей неделей
         for (const item of schedule) {
             const [startStr, endStr] = item.range.split('-');
             const [startDay, startMonth] = startStr.split('.');
@@ -784,7 +790,7 @@ async function fetchDutyEngineer() {
                 day: parseInt(endDay, 10)
             });
 
-            // Если начало недели и конец недели совпадают с диапазоном из расписания, возвращаем имя
+            // Если начало недели и конец недели совпадают с диапазоном расписания, возвращаем имя
             if (startOfWeek.day === scheduleStart.day &&
                 startOfWeek.month === scheduleStart.month &&
                 endOfWeek.day === scheduleEnd.day &&
