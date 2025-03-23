@@ -722,9 +722,10 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
 // ----------------------------------------------------------------------------------
 // 9) ИНТЕГРАЦИЯ С CONFLUENCE (ДЕЖУРНЫЙ)
 // ----------------------------------------------------------------------------------
+
 async function fetchDutyEngineer() {
     try {
-        const pageId = '3539406'; // пример
+        const pageId = '3539406'; // пример ID страницы Confluence
         const token = process.env.CONFLUENCE_API_TOKEN;
 
         const resp = await axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
@@ -740,6 +741,7 @@ async function fetchDutyEngineer() {
             return 'Не найдено';
         }
 
+        // Парсинг строк таблицы с расписанием
         const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
         const schedule = [];
         let match;
@@ -756,19 +758,37 @@ async function fetchDutyEngineer() {
             return 'Не найдено';
         }
 
-        const nowStr = getMoscowTimestamp();
-        const today = DateTime.fromFormat(nowStr, 'yyyy-MM-dd HH:mm:ss');
+        // Получаем текущую дату в часовом поясе Москвы
+        const now = DateTime.now().setZone("Europe/Moscow");
 
+        // Определяем начало недели (понедельник) и конец недели (воскресенье)
+        // Luxon по ISO неделя начинается с понедельника
+        const startOfWeek = now.startOf('week');
+        const endOfWeek = startOfWeek.plus({ days: 6 });
+        const currentYear = startOfWeek.year;
+
+        // Ищем запись, где диапазон соответствует текущей неделе
         for (const item of schedule) {
             const [startStr, endStr] = item.range.split('-');
             const [startDay, startMonth] = startStr.split('.');
             const [endDay, endMonth] = endStr.split('.');
-            const year = 2025; // пример
 
-            const startDate = DateTime.fromObject({ year, month: +startMonth, day: +startDay });
-            const endDate = DateTime.fromObject({ year, month: +endMonth, day: +endDay });
+            const scheduleStart = DateTime.fromObject({
+                year: currentYear,
+                month: parseInt(startMonth, 10),
+                day: parseInt(startDay, 10)
+            });
+            const scheduleEnd = DateTime.fromObject({
+                year: currentYear,
+                month: parseInt(endMonth, 10),
+                day: parseInt(endDay, 10)
+            });
 
-            if (today >= startDate && today <= endDate) {
+            // Если начало недели и конец недели совпадают с диапазоном из расписания, возвращаем имя
+            if (startOfWeek.day === scheduleStart.day &&
+                startOfWeek.month === scheduleStart.month &&
+                endOfWeek.day === scheduleEnd.day &&
+                endOfWeek.month === scheduleEnd.month) {
                 return item.name;
             }
         }
@@ -779,6 +799,7 @@ async function fetchDutyEngineer() {
     }
 }
 
+// Пример использования в команде бота
 bot.command('duty', async (ctx) => {
     try {
         const engineer = await fetchDutyEngineer();
