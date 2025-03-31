@@ -831,42 +831,16 @@ bot.command('duty', async (ctx) => {
 
 let currentSchedule = {};
 
-function getLastExcelFile() {
-    const dirPath = path.join(__dirname, 'raspisanie');
-    if (!fs.existsSync(dirPath)) {
-        console.warn(`Папка 'raspisanie' не найдена`);
-        return null;
-    }
-
-    const files = fs.readdirSync(dirPath)
-        .filter((f) => f.toLowerCase().endsWith('.xlsx'))
-        .map((f) => ({
-            name: f,
-            time: fs.statSync(path.join(dirPath, f)).mtime.getTime()
-        }))
-        .sort((a, b) => b.time - a.time);
-
-    if (files.length === 0) {
-        console.warn(`Нет xlsx-файлов в папке 'raspisanie'`);
-        return null;
-    }
-
-    return path.join(dirPath, files[0].name);
-}
-
 function parseExcelSchedule() {
     const filePath = getLastExcelFile();
-    if (!filePath) {
-        console.error('Нет расписания для парсинга (файл не найден)');
-        return {};
-    }
+    if (!filePath) return {};
 
     const workbook = xlsx.readFile(filePath);
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-
     const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
+    // Находим строку с ФИО
     let headerRowIndex = -1;
     for (let i = 0; i < raw.length; i++) {
         if (String(raw[i][0]).trim().toLowerCase() === "фио") {
@@ -874,49 +848,51 @@ function parseExcelSchedule() {
             break;
         }
     }
-    if (headerRowIndex === -1) {
-        console.warn('Не найдена строка с "ФИО" в Excel');
-        return {};
-    }
+    if (headerRowIndex === -1) return {};
 
-    const dayColumnMap = {};
-    for (let col = 1; col < raw[headerRowIndex].length; col++) {
-        const cellVal = String(raw[headerRowIndex][col]).trim();
-        const dayNum = parseInt(cellVal, 10);
-        if (!isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
-            dayColumnMap[dayNum] = col;
+    // Находим строку с днями недели
+    const dayNames = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
+    let daysRowIndex = -1;
+    for (let i = 0; i < raw.length; i++) {
+        if (dayNames.includes(String(raw[i][1]).trim().toLowerCase())) {
+            daysRowIndex = i;
+            break;
         }
     }
 
     const schedule = {};
-    for (let day = 1; day <= 31; day++) {
-        schedule[day] = {
-            "9-21": [],
-            "10-19": [],
-            "21-9": []
-        };
+    const dayColumnMap = {};
+
+    // Создаем карту дней
+    for (let col = 1; col < raw[headerRowIndex].length; col++) {
+        const cellVal = String(raw[headerRowIndex][col]).trim();
+        const dayNum = parseInt(cellVal, 10);
+        
+        // Проверяем что это число и соответствует дню недели
+        if (!isNaN(dayNum) && dayNum >= 1 && dayNum <= 31 &&
+            dayNames.includes(String(raw[daysRowIndex][col]).trim().toLowerCase())) {
+            dayColumnMap[dayNum] = col;
+        }
     }
 
+    // Парсим расписание
     for (let i = headerRowIndex + 1; i < raw.length; i++) {
         const row = raw[i];
-        if (!row || row.length === 0) continue;
-
         const fio = String(row[0] || "").trim();
         if (!fio) continue;
 
-        for (const dayStr of Object.keys(dayColumnMap)) {
-            const day = parseInt(dayStr, 10);
-            const colIndex = dayColumnMap[day];
+        for (const [day, colIndex] of Object.entries(dayColumnMap)) {
             const cellVal = String(row[colIndex] || "").trim().toLowerCase();
-
+            if (!schedule[day]) {
+                schedule[day] = { "9-21": [], "10-19": [], "21-9": [] };
+            }
+            
             if (cellVal === "9-21" || cellVal === "9–21") {
                 schedule[day]["9-21"].push(fio);
             } else if (cellVal === "10-19" || cellVal === "10–19") {
                 schedule[day]["10-19"].push(fio);
             } else if (cellVal === "21-9" || cellVal === "21–9") {
                 schedule[day]["21-9"].push(fio);
-            } else {
-                // пусто, отпуск, и т.д.
             }
         }
     }
