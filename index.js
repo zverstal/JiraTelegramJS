@@ -466,7 +466,7 @@ async function checkForNewComments() {
 
 // Лимитер на отправку — без изменений
 const limiter = new Bottleneck({
-    minTime: 2000,
+    minTime: 5000,
     maxConcurrent: 1
 });
 const sendMessageWithLimiter = limiter.wrap(async (chatId, text, opts) => {
