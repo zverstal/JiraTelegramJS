@@ -1023,11 +1023,14 @@ cron.schedule('* * * * *', async () => {
     try {
         console.log('[CRON] Обновление задач из Jira (каждую минуту)...');
         await fetchAndStoreJiraTasks();
-        // Если нужно сразу же рассылать новые задачи, то можете вызвать sendJiraTasks:
-        // const ctx = { reply: (text, opts) => bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, opts) };
-        // await sendJiraTasks(ctx);
+
+        // Отправляем задачи в Telegram
+        const ctx = {
+            reply: (text, opts) => bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, opts)
+        };
+        await sendJiraTasks(ctx);
     } catch (err) {
-        console.error('Ошибка в CRON fetchAndStoreJiraTasks:', err);
+        console.error('Ошибка в CRON fetchAndStoreJiraTasks/sendJiraTasks:', err);
     }
 }, {
     timezone: 'Europe/Moscow'
