@@ -350,9 +350,14 @@ async function sendJiraTasks(ctx) {
 // ----------------------------------------------------------------------------------
 async function checkForNewComments() {
     try {
-        const jql = `project = SUPPORT AND Отдел = "Техническая поддержка" AND status in (Done, Awaiting, "Awaiting implementation") AND updated >= -2d`;
+        // 1. Берём все задачи проекта SUPPORT, обновлённые за последние 2 дня.
+        //    Не ограничиваемся отделом, потому что хотим иногда смотреть и на другие отделы,
+        //    если там пишет "наш" человек.
+        const jql = `project = SUPPORT AND updated >= -2d`;
+
         const sources = ['sxl', 'betone'];
 
+        // Перечень "наших" авторов (те, кого мы раньше исключали)
         const excludedAuthors = Object.values(jiraUserMappings).flatMap(mapping => Object.values(mapping));
 
         for (const source of sources) {
@@ -364,52 +369,90 @@ async function checkForNewComments() {
 
             do {
                 const response = await axios.get(url, {
-                    headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/json' },
-                    params: { jql, maxResults: 50, startAt, fields: 'comment,assignee,summary,priority,issuetype' }
+                    headers: {
+                        'Authorization': `Bearer ${pat}`,
+                        'Accept': 'application/json'
+                    },
+                    params: {
+                        jql,
+                        maxResults: 50,
+                        startAt,
+                        fields: 'comment,assignee,summary,priority,issuetype,' +
+                                'customfield_10500,customfield_10504' // поля, где может храниться "Отдел"
+                    }
                 });
 
                 total = response.data.total;
                 const issues = response.data.issues;
 
                 for (const issue of issues) {
-                    // ИСПРАВЛЕНО: "combinedId" = source + "-" + issue.key
+                    // Формируем "combinedId" = "<source>-<issueKey>"
                     const taskId = `${source}-${issue.key}`;
-                    const comments = issue.fields.comment.comments;
-                    if (!comments || comments.length === 0) continue;
 
+                    // Определяем значение поля "Отдел" (может отличаться для SXL и Betone)
+                    let department = 'Не указан';
+                    if (source === 'sxl') {
+                        // Допустим, customfield_10500 хранит отдел в sxl
+                        department = issue.fields.customfield_10500?.value || 'Не указан';
+                    } else {
+                        // В betone, допустим, customfield_10504
+                        department = issue.fields.customfield_10504?.value || 'Не указан';
+                    }
+
+                    const comments = issue.fields.comment?.comments;
+                    if (!comments || comments.length === 0) {
+                        continue;
+                    }
+
+                    // Берём последний комментарий
                     const lastComment = comments[comments.length - 1];
                     const lastCommentId = lastComment.id;
                     const author = lastComment.author?.name || 'Не указан';
 
-                    db.get('SELECT lastCommentId FROM task_comments WHERE taskId = ?', [taskId], (err, row) => {
-                        if (err) {
-                            console.error('Error fetching last comment from DB:', err);
-                            return;
-                        }
+                    // --- ЛОГИКА ОТБОРА:
+                    // Уведомляем, если:
+                    //    1) department === "Техническая поддержка"
+                    //       (то берем любой коммент), ИЛИ
+                    //    2) author принадлежит excludedAuthors
+                    const isTechSupportDept = (department === 'Техническая поддержка');
+                    const isOurComment = excludedAuthors.includes(author);
 
-                        if (!row) {
-                            // нет записи, значит первый раз
-                            if (!excludedAuthors.includes(author)) {
-                                sendTelegramMessage(taskId, source, issue, lastComment, author);
+                    // Если не выполняется ни одно из условий, просто пропускаем
+                    if (!isTechSupportDept && !isOurComment) {
+                        continue;
+                    }
+
+                    // Проверяем, не отправляли ли мы уже уведомление об этом комментарии
+                    db.get(
+                        'SELECT lastCommentId FROM task_comments WHERE taskId = ?',
+                        [taskId],
+                        (err, row) => {
+                            if (err) {
+                                console.error('Error fetching last comment from DB:', err);
+                                return;
                             }
-                            db.run(
-                                `INSERT INTO task_comments (taskId, lastCommentId, assignee)
-                                 VALUES (?, ?, ?)`,
-                                [taskId, lastCommentId, issue.fields.assignee?.displayName || 'Не указан']
-                            );
-                        } else if (row.lastCommentId !== lastCommentId) {
-                            // новый коммент
-                            if (!excludedAuthors.includes(author)) {
-                                sendTelegramMessage(taskId, source, issue, lastComment, author);
+
+                            if (!row) {
+                                // Нет записи => первый раз видим
+                                sendTelegramMessage(taskId, source, issue, lastComment, author, department, isOurComment);
+                                db.run(
+                                    `INSERT INTO task_comments (taskId, lastCommentId, assignee)
+                                     VALUES (?, ?, ?)`,
+                                    [taskId, lastCommentId, issue.fields.assignee?.displayName || 'Не указан']
+                                );
+                            } else if (row.lastCommentId !== lastCommentId) {
+                                // Новый комментарий => уведомляем
+                                sendTelegramMessage(taskId, source, issue, lastComment, author, department, isOurComment);
+                                db.run(
+                                    `UPDATE task_comments
+                                     SET lastCommentId = ?, assignee = ?
+                                     WHERE taskId = ?`,
+                                    [lastCommentId, issue.fields.assignee?.displayName || 'Не указан', taskId]
+                                );
                             }
-                            db.run(
-                                `UPDATE task_comments
-                                 SET lastCommentId = ?, assignee = ?
-                                 WHERE taskId = ?`,
-                                [lastCommentId, issue.fields.assignee?.displayName || 'Не указан', taskId]
-                            );
+                            // Если row.lastCommentId === lastCommentId, значит уже отправляли => ничего не делаем
                         }
-                    });
+                    );
                 }
 
                 startAt += 50;
@@ -420,7 +463,8 @@ async function checkForNewComments() {
     }
 }
 
-// Лимитер на отправку
+
+// Лимитер на отправку — без изменений
 const limiter = new Bottleneck({
     minTime: 2000,
     maxConcurrent: 1
@@ -429,14 +473,21 @@ const sendMessageWithLimiter = limiter.wrap(async (chatId, text, opts) => {
     await bot.api.sendMessage(chatId, text, opts);
 });
 
-// Отправляем сообщение при новом комментарии
-function sendTelegramMessage(combinedId, source, issue, lastComment, author) {
+// Функция отправки сообщения
+function sendTelegramMessage(combinedId, source, issue, lastComment, author, department, isOurComment) {
     const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
 
+    // Если автор "наш" (isOurComment===true), то добавляем фразу «от технической поддержки».
+    // Иначе — обычное сообщение.
+    const prefix = isOurComment
+        ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
+        : 'В задаче появился новый комментарий:\n\n';
+
     const msg =
-        `В задаче появился новый комментарий:\n\n` +
+        prefix +
         `Задача: ${combinedId}\n` +
         `Источник: ${source}\n` +
+        `Отдел: ${department}\n` +
         `Ссылка: ${getTaskUrl(source, combinedId)}\n` +
         `Описание: ${issue.fields.summary}\n` +
         `Приоритет: ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
@@ -449,11 +500,12 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, author) {
         .catch(e => console.error('Error sending message to Telegram:', e));
 }
 
-// Проверяем новые комментарии каждые 5 минут
+// Запуск проверки каждые 5 минут
 cron.schedule('*/5 * * * *', () => {
     console.log('Checking for new comments...');
     checkForNewComments();
 });
+
 
 // ----------------------------------------------------------------------------------
 // 7) КНОПКА "ВЗЯТЬ В РАБОТУ"
