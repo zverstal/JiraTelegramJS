@@ -1018,6 +1018,36 @@ function getNightMessageText() {
 // ----------------------------------------------------------------------------------
 
 // 10:00 — сообщение из Excel
+
+cron.schedule('* * * * *', async () => {
+    try {
+        console.log('[CRON] Обновление задач из Jira (каждую минуту)...');
+        await fetchAndStoreJiraTasks();
+        // Если нужно сразу же рассылать новые задачи, то можете вызвать sendJiraTasks:
+        // const ctx = { reply: (text, opts) => bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, opts) };
+        // await sendJiraTasks(ctx);
+    } catch (err) {
+        console.error('Ошибка в CRON fetchAndStoreJiraTasks:', err);
+    }
+}, {
+    timezone: 'Europe/Moscow'
+});
+
+// ---------------------------------------------------------------------------
+// КРОН каждые 5 минут – проверка новых комментариев
+// ---------------------------------------------------------------------------
+cron.schedule('*/5 * * * *', async () => {
+    try {
+        console.log('[CRON] Проверка новых комментариев (каждые 5 минут)...');
+        await checkForNewComments();
+    } catch (err) {
+        console.error('Ошибка в CRON checkForNewComments:', err);
+    }
+}, {
+    timezone: 'Europe/Moscow'
+});
+
+
 cron.schedule('0 10 * * *', () => {
     try {
         const text = getDayMessageText();
@@ -1145,7 +1175,10 @@ bot.command('forcestart', async (ctx) => {
     await ctx.reply('♻️ Все задачи были запущены повторно вручную (и расписание перечитано).');
 });
 
-// Запускаем бота
 bot.start({
-    onStart: initializeBotTasks
-});
+    onStart: (botInfo) => {
+      console.log(`✅ Bot ${botInfo.username} is up and running`);
+      initializeBotTasks();
+    }
+  });
+  
