@@ -1072,7 +1072,7 @@ function getDayMessageText() {
            `<b>Сегодня в ночь (21-9):</b> ${arr21_9.length ? arr21_9.join(", ") : "—"}\n`;
 }
 
-function getNightMessageText() {
+async function getNightMessageText() {
     const now = getMoscowDateTime();
     const todaySchedule = getScheduleForDate(now) || {};
     
@@ -1083,11 +1083,15 @@ function getNightMessageText() {
     const arr9_21_tomorrow = tomorrowSchedule["9-21"] || [];
     const arr10_19_tomorrow = tomorrowSchedule["10-19"] || [];
 
+    const engineer = await fetchDutyEngineer();
+
     return `🌙 <b>Расписание вечер, ${now.toFormat("dd.MM.yyyy")} (21:00)</b>\n` +
            `\n<b>Сегодня в ночь (21-9):</b> ${arr21_9_today.length ? arr21_9_today.join(", ") : "—"}\n` +
            `<b>Завтра утро (9-21):</b> ${arr9_21_tomorrow.length ? arr9_21_tomorrow.join(", ") : "—"}\n` +
-           `<b>Завтра 5/2 (10-19):</b> ${arr10_19_tomorrow.length ? arr10_19_tomorrow.join(", ") : "—"}\n`;
+           `<b>Завтра 5/2 (10-19):</b> ${arr10_19_tomorrow.length ? arr10_19_tomorrow.join(", ") : "—"}\n` +
+           `\n<b>Дежурный специалист DevOPS:</b> ${engineer}`;
 }
+
 
 // ----------------------------------------------------------------------------------
 // 12) КРОН ЗАДАЧИ (10:00, 21:00, последний день месяца в 11:00) + старые nightShiftCron/morningShiftCron
