@@ -353,7 +353,7 @@ async function checkForNewComments() {
         // 1. Берём все задачи проекта SUPPORT, обновлённые за последние 2 дня.
         //    Не ограничиваемся отделом, потому что хотим иногда смотреть и на другие отделы,
         //    если там пишет "наш" человек.
-        const jql = `project = SUPPORT AND updated >= -2d`;
+        const jql = `project = SUPPORT AND updated >= -7d`;
 
         const sources = ['sxl', 'betone'];
 
