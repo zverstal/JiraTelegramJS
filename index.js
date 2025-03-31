@@ -259,7 +259,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
                 );
             } else {
                 db.run(
-                    `INSERT INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source)
+                    `INSERT OR REPLACE INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source)
                      VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
                     [task.id, task.title, task.priority, task.issueType, task.department, task.dateAdded, task.source]
                 );
