@@ -263,7 +263,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
                 );
             } else {
                 db.run(
-                    `INSERT INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source)
+                    `INSERT OR REPLACE INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source)
                      VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
                     [task.id, task.title, task.priority, task.issueType, task.department, task.dateAdded, task.source]
                 );
@@ -828,6 +828,35 @@ bot.command('duty', async (ctx) => {
 // ----------------------------------------------------------------------------------
 // 10) ПАРСИМ "ПОСЛЕДНИЙ" EXCEL-ФАЙЛ ДЛЯ РАСПИСАНИЯ
 // ----------------------------------------------------------------------------------
+// Допустим, папка называется "raspisanie" и лежит рядом с index.js
+const RASPISANIE_DIR = path.join(__dirname, 'raspisanie');
+
+// Функция находит последний (по времени изменения) Excel-файл (*.xlsx)
+function getLastExcelFile() {
+    if (!fs.existsSync(RASPISANIE_DIR)) {
+        console.log('Папка не найдена:', RASPISANIE_DIR);
+        return null;
+    }
+
+    // Смотрим все .xlsx файлы
+    const allFiles = fs.readdirSync(RASPISANIE_DIR).filter(file => file.endsWith('.xlsx'));
+    if (allFiles.length === 0) {
+        console.log('В папке "raspisanie" нет XLSX-файлов.');
+        return null;
+    }
+
+    // Сортируем файлы по времени изменения (mtimeMs) — от нового к старому
+    allFiles.sort((a, b) => {
+        const aTime = fs.statSync(path.join(RASPISANIE_DIR, a)).mtimeMs;
+        const bTime = fs.statSync(path.join(RASPISANIE_DIR, b)).mtimeMs;
+        return bTime - aTime;
+    });
+
+    // Первый в отсортированном списке — самый "свежий"
+    const latestFile = allFiles[0];
+    return path.join(RASPISANIE_DIR, latestFile);
+}
+
 
 let currentSchedule = {};
 
