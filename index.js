@@ -9,6 +9,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const xlsx = require('xlsx'); // Для чтения Excel-файлов
 
 // ----------------------------------------------------------------------------------
 // 1) ИНИЦИАЛИЗАЦИЯ БОТА, БАЗЫ, ФУНКЦИЙ
@@ -17,12 +18,17 @@ const { v4: uuidv4 } = require('uuid');
 const bot = new Bot(process.env.BOT_API_KEY);
 const db = new sqlite3.Database('tasks.db');
 
-// Получение московского времени
+// Получение московского времени в формате "yyyy-MM-dd HH:mm:ss"
 function getMoscowTimestamp() {
     return DateTime.now().setZone('Europe/Moscow').toFormat('yyyy-MM-dd HH:mm:ss');
 }
 
-// Создаём нужные таблицы в SQLite
+// Получение DateTime с часовым поясом Москвы
+function getMoscowDateTime() {
+    return DateTime.now().setZone('Europe/Moscow');
+}
+
+// Создаём нужные таблицы в SQLite (если их ещё нет)
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
@@ -62,10 +68,9 @@ function getPriorityEmoji(priority) {
     return emojis[priority] || '';
 }
 
-// ИСПРАВЛЕНО: вспомогательная функция, которая отделяет "sxl-" или "betone-" от реального ключа
+// Вспомогательная функция, которая отделяет "sxl-" или "betone-" от реального ключа
 function extractRealJiraKey(fullId) {
     // Пример: "sxl-SUPPORT-123" → ["sxl", "SUPPORT", "123"] → realKey = "SUPPORT-123"
-    //         "betone-SUPPORT-99" → ["betone", "SUPPORT", "99"] → realKey = "SUPPORT-99"
     const parts = fullId.split('-');
     parts.shift(); // убираем первый элемент (source)
     return parts.join('-');
@@ -73,7 +78,7 @@ function extractRealJiraKey(fullId) {
 
 // Генерация URL для Jira
 function getTaskUrl(source, combinedId) {
-    // ИСПРАВЛЕНО: нужно "очистить" приставку (sxl- / betone-)
+    // получаем реальный ключ "SUPPORT-123"
     const realKey = extractRealJiraKey(combinedId);
     return `https://jira.${source}.team/browse/${realKey}`;
 }
@@ -159,16 +164,14 @@ cron.schedule('0 3 * * *', () => {
 });
 
 // ----------------------------------------------------------------------------------
-// 4) ФУНКЦИИ ДЛЯ RABOTЫ С JIRA
+// 4) ФУНКЦИИ ДЛЯ RABOTЫ С JIRA (ПОЛУЧЕНИЕ ЗАДАЧ, КОММЕНТОВ, ОБНОВЛЕНИЕ СТАТУСОВ)
 // ----------------------------------------------------------------------------------
 
-// 4.1) Фетчим задачи из Jira (сразу из 2 источников)
 async function fetchAndStoreJiraTasks() {
     await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL, 'Техническая поддержка');
     await fetchAndStoreTasksFromJira('betone', 'https://jira.betone.team/rest/api/2/search', process.env.JIRA_PAT_BETONE, 'Техническая поддержка');
 }
 
-// ИСПРАВЛЕНО: формируем уникальный id вида "<source>-<issue.key>"
 async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
     try {
         console.log(`Fetching tasks from ${source} Jira...`);
@@ -199,11 +202,9 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
         });
         console.log(`${source} Jira API response:`, response.data);
 
-        // Создаем список "уникальных" идентификаторов (sxl-SUPPORT-123 и т.п.)
         const fetchedTaskIds = response.data.issues.map(issue => `${source}-${issue.key}`);
 
         // Удаляем из локальной БД те, которых нет в свежем списке
-        // ИСПРАВЛЕНО: вместо простого issue.key используем строку "source-issueKey"
         await new Promise((resolve, reject) => {
             const placeholders = fetchedTaskIds.map(() => '?').join(',');
             db.run(
@@ -223,8 +224,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
 
         // Обновляем / добавляем задачи
         for (const issue of response.data.issues) {
-            const uniqueId = `${source}-${issue.key}`; // "<source>-<issueKey>"
-
+            const uniqueId = `${source}-${issue.key}`;
             const task = {
                 id: uniqueId,
                 title: issue.fields.summary,
@@ -274,10 +274,9 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
     }
 }
 
-// ИСПРАВЛЕНО: при получении данных задачи тоже учитываем source + реальный ключ
 async function getJiraTaskDetails(source, combinedId) {
     try {
-        const realKey = extractRealJiraKey(combinedId); // "SUPPORT-123"
+        const realKey = extractRealJiraKey(combinedId);
         const url = `https://jira.${source}.team/rest/api/2/issue/${realKey}?fields=summary,description,attachment,priority,issuetype,status`;
         const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
 
@@ -295,8 +294,9 @@ async function getJiraTaskDetails(source, combinedId) {
 }
 
 // ----------------------------------------------------------------------------------
-// 5) ОТПРАВКА ЗАДАЧ В TELEGRAM
+// 5) ОТПРАВКА ЗАДАЧ ИЗ JIRA В TELEGRAM
 // ----------------------------------------------------------------------------------
+
 async function sendJiraTasks(ctx) {
     const today = getMoscowTimestamp().split(' ')[0];
     const query = `
@@ -348,16 +348,12 @@ async function sendJiraTasks(ctx) {
 // ----------------------------------------------------------------------------------
 // 6) ПРОВЕРКА НОВЫХ КОММЕНТАРИЕВ
 // ----------------------------------------------------------------------------------
+
 async function checkForNewComments() {
     try {
-        // 1. Берём все задачи проекта SUPPORT, обновлённые за последние 2 дня.
-        //    Не ограничиваемся отделом, потому что хотим иногда смотреть и на другие отделы,
-        //    если там пишет "наш" человек.
         const jql = `project = SUPPORT AND updated >= -7d`;
-
         const sources = ['sxl', 'betone'];
 
-        // Перечень "наших" авторов (те, кого мы раньше исключали)
         const excludedAuthors = Object.values(jiraUserMappings).flatMap(mapping => Object.values(mapping));
 
         for (const source of sources) {
@@ -377,8 +373,7 @@ async function checkForNewComments() {
                         jql,
                         maxResults: 50,
                         startAt,
-                        fields: 'comment,assignee,summary,priority,issuetype,' +
-                                'customfield_10500,customfield_10504' // поля, где может храниться "Отдел"
+                        fields: 'comment,assignee,summary,priority,issuetype,customfield_10500,customfield_10504'
                     }
                 });
 
@@ -386,16 +381,12 @@ async function checkForNewComments() {
                 const issues = response.data.issues;
 
                 for (const issue of issues) {
-                    // Формируем "combinedId" = "<source>-<issueKey>"
                     const taskId = `${source}-${issue.key}`;
-
-                    // Определяем значение поля "Отдел" (может отличаться для SXL и Betone)
                     let department = 'Не указан';
+
                     if (source === 'sxl') {
-                        // Допустим, customfield_10500 хранит отдел в sxl
                         department = issue.fields.customfield_10500?.value || 'Не указан';
                     } else {
-                        // В betone, допустим, customfield_10504
                         department = issue.fields.customfield_10504?.value || 'Не указан';
                     }
 
@@ -404,25 +395,20 @@ async function checkForNewComments() {
                         continue;
                     }
 
-                    // Берём последний комментарий
                     const lastComment = comments[comments.length - 1];
                     const lastCommentId = lastComment.id;
                     const author = lastComment.author?.name || 'Не указан';
 
-                    // --- ЛОГИКА ОТБОРА:
                     // Уведомляем, если:
-                    //    1) department === "Техническая поддержка"
-                    //       (то берем любой коммент), ИЛИ
-                    //    2) author принадлежит excludedAuthors
+                    //  1) department === "Техническая поддержка", ИЛИ
+                    //  2) author ∈ наш список excludedAuthors
                     const isTechSupportDept = (department === 'Техническая поддержка');
                     const isOurComment = excludedAuthors.includes(author);
 
-                    // Если не выполняется ни одно из условий, просто пропускаем
                     if (!isTechSupportDept && !isOurComment) {
                         continue;
                     }
 
-                    // Проверяем, не отправляли ли мы уже уведомление об этом комментарии
                     db.get(
                         'SELECT lastCommentId FROM task_comments WHERE taskId = ?',
                         [taskId],
@@ -450,7 +436,6 @@ async function checkForNewComments() {
                                     [lastCommentId, issue.fields.assignee?.displayName || 'Не указан', taskId]
                                 );
                             }
-                            // Если row.lastCommentId === lastCommentId, значит уже отправляли => ничего не делаем
                         }
                     );
                 }
@@ -463,8 +448,7 @@ async function checkForNewComments() {
     }
 }
 
-
-// Лимитер на отправку — без изменений
+// Лимитер на отправку, чтобы не «спамить» слишком быстро
 const limiter = new Bottleneck({
     minTime: 5000,
     maxConcurrent: 1
@@ -473,12 +457,9 @@ const sendMessageWithLimiter = limiter.wrap(async (chatId, text, opts) => {
     await bot.api.sendMessage(chatId, text, opts);
 });
 
-// Функция отправки сообщения
 function sendTelegramMessage(combinedId, source, issue, lastComment, author, department, isOurComment) {
     const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
 
-    // Если автор "наш" (isOurComment===true), то добавляем фразу «от технической поддержки».
-    // Иначе — обычное сообщение.
     const prefix = isOurComment
         ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
         : 'В задаче появился новый комментарий:\n\n';
@@ -500,20 +481,14 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, author, dep
         .catch(e => console.error('Error sending message to Telegram:', e));
 }
 
-// Запуск проверки каждые 5 минут
-cron.schedule('*/5 * * * *', () => {
-    console.log('Checking for new comments...');
-    checkForNewComments();
-});
-
-
 // ----------------------------------------------------------------------------------
 // 7) КНОПКА "ВЗЯТЬ В РАБОТУ"
 // ----------------------------------------------------------------------------------
+
 bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     try {
         await ctx.answerCallbackQuery();
-        const combinedId = ctx.match[1];  // "sxl-SUPPORT-123" или "betone-SUPPORT-123"
+        const combinedId = ctx.match[1];
         const username = ctx.from.username;
 
         db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], async (err, task) => {
@@ -533,7 +508,6 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
                 try {
                     await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
                 } catch {}
-
                 return ctx.reply('Задача не найдена в БД.', { reply_markup: keyboard });
             }
 
@@ -581,7 +555,6 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
                 const keyboard = new InlineKeyboard()
                     .text('Подробнее', `toggle_description:${task.id}`)
                     .url('Перейти к задаче', getTaskUrl(task.source, task.id));
-
                 await ctx.reply(
                     'Эта задача не для отдела Технической поддержки и не может быть взята в работу через этот бот.',
                     { reply_markup: keyboard }
@@ -598,12 +571,10 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     }
 });
 
-// Функция обновления статуса
-// ИСПРАВЛЕНО: передаём "combinedId", внутри извлекаем реальный ключ
 async function updateJiraTaskStatus(source, combinedId, telegramUsername) {
     try {
         const realKey = extractRealJiraKey(combinedId);
-        let transitionId = source === 'sxl' ? '221' : '201'; // Пример
+        let transitionId = source === 'sxl' ? '221' : '201';
         const jiraUsername = jiraUserMappings[telegramUsername]?.[source];
         if (!jiraUsername) {
             console.error(`No Jira username for telegram user: ${telegramUsername}`);
@@ -624,7 +595,7 @@ async function updateJiraTaskStatus(source, combinedId, telegramUsername) {
             return false;
         }
 
-        // Делаем переход
+        // Переходим в нужный статус
         const transitionUrl = `https://jira.${source}.team/rest/api/2/issue/${realKey}/transitions`;
         const r2 = await axios.post(transitionUrl, {
             transition: { id: transitionId }
@@ -634,14 +605,17 @@ async function updateJiraTaskStatus(source, combinedId, telegramUsername) {
                 'Content-Type': 'application/json'
             }
         });
-        return r2.status === 204;
+        return (r2.status === 204);
     } catch (error) {
         console.error(`Error updating Jira task:`, error);
         return false;
     }
 }
 
-// Функция экранирования HTML
+// ----------------------------------------------------------------------------------
+// 8) КНОПКА "Подробнее" (toggle_description)
+// ----------------------------------------------------------------------------------
+
 function escapeHtml(text) {
     if (!text) return '';
     return text
@@ -650,12 +624,10 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;');
 }
 
-// Функция обработки таблиц (оборачиваем в <pre></pre>)
 function formatTables(text) {
     return text.replace(/\|(.+?)\|/g, match => `<pre>${match.trim()}</pre>`);
 }
 
-// Функция обработки блоков кода
 function convertCodeBlocks(text) {
     return text
         .replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (match, lang, code) => {
@@ -666,26 +638,24 @@ function convertCodeBlocks(text) {
         });
 }
 
-// Функция преобразования Markdown в HTML (упрощённо)
 function parseCustomMarkdown(text) {
     if (!text) return '';
 
-    text = convertCodeBlocks(text); // Обрабатываем блоки кода
-    text = formatTables(text); // Обрабатываем таблицы
+    text = convertCodeBlocks(text);
+    text = formatTables(text);
 
     return text
-        .replace(/\*(.*?)\*/g, '<b>$1</b>')     // *Жирный*
-        .replace(/_(.*?)_/g, '<i>$1</i>')       // _Курсив_
-        .replace(/\+(.*?)\+/g, '<u>$1</u>')     // +Подчеркнутый+
-        .replace(/~~(.*?)~~/g, '<s>$1</s>')     // ~~Зачеркнутый~~
-        .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') // `Инлайн-код`
-        .replace(/^\-\s(.*)/gm, '• $1')         // - Маркированный список
-        .replace(/^\*\s(.*)/gm, '• $1')         // * Альтернативный маркер
-        .replace(/^\d+\.\s(.*)/gm, '🔹 $1')     // 1. Нумерованный список (условно)
-        .replace(/\n{3,}/g, '\n\n');            // Убираем лишние пустые строки
+        .replace(/\*(.*?)\*/g, '<b>$1</b>')     
+        .replace(/_(.*?)_/g, '<i>$1</i>')       
+        .replace(/\+(.*?)\+/g, '<u>$1</u>')     
+        .replace(/~~(.*?)~~/g, '<s>$1</s>')     
+        .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') 
+        .replace(/^\-\s(.*)/gm, '• $1')         
+        .replace(/^\*\s(.*)/gm, '• $1')         
+        .replace(/^\d+\.\s(.*)/gm, '🔹 $1')     
+        .replace(/\n{3,}/g, '\n\n');
 }
 
-// Функция обработки описания
 function formatDescriptionAsHtml(rawDescription) {
     return parseCustomMarkdown(rawDescription || '');
 }
@@ -695,30 +665,24 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.answerCallbackQuery();
         const combinedId = ctx.match[1];
 
-        // Пытаемся найти в БД
         let task = await new Promise(resolve => {
             db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
         });
 
-        let source;
-        let issue;
+        let source, issue;
 
         if (task) {
             source = task.source;
             issue = await getJiraTaskDetails(source, combinedId);
         }
 
-        // Если нет или не получилось, пытаемся явно "sxl" и "betone"
-        // (это на случай, если в БД чего-то не актуально)
+        // Если не удалось — пробуем явно sxl, betone
         if (!issue) {
             issue = await getJiraTaskDetails('sxl', combinedId);
-            if (issue) {
-                source = 'sxl';
-            } else {
+            if (issue) source = 'sxl';
+            else {
                 issue = await getJiraTaskDetails('betone', combinedId);
-                if (issue) {
-                    source = 'betone';
-                }
+                if (issue) source = 'betone';
             }
         }
 
@@ -756,37 +720,39 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         const isExpanded = currentText.endsWith("...");
 
         const keyboard = new InlineKeyboard();
-
         if ((task?.department === "Техническая поддержка") && (!isTaken || taskStatus === "Open")) {
             keyboard.text('Взять в работу', `take_task:${combinedId}`);
         }
-
         keyboard
             .text(isExpanded ? 'Подробнее' : 'Скрыть', `toggle_description:${combinedId}`)
             .url('Открыть в Jira', taskUrl);
 
         if (!isExpanded) {
             // При раскрытии добавляем ссылки на вложения
-            let counter = 1;
-            for (const att of issue.fields.attachment || []) {
-                try {
-                    const fileResp = await axios.get(att.content, {
-                        responseType: 'arraybuffer',
-                        headers: {
-                            'Authorization': `Bearer ${source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
-                        }
-                    });
+            if (issue.fields.attachment && Array.isArray(issue.fields.attachment)) {
+                let counter = 1;
+                for (const att of issue.fields.attachment) {
+                    try {
+                        const fileResp = await axios.get(att.content, {
+                            responseType: 'arraybuffer',
+                            headers: {
+                                'Authorization': `Bearer ${
+                                    source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE
+                                }`
+                            }
+                        });
 
-                    let originalFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
-                    const finalName = `${uuidv4()}_${originalFilename}`;
-                    const filePath = path.join(ATTACHMENTS_DIR, finalName);
-                    fs.writeFileSync(filePath, fileResp.data);
+                        let originalFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
+                        const finalName = `${uuidv4()}_${originalFilename}`;
+                        const filePath = path.join(ATTACHMENTS_DIR, finalName);
+                        fs.writeFileSync(filePath, fileResp.data);
 
-                    const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
+                        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
 
-                    keyboard.row().url(`Вложение #${counter++}`, publicUrl);
-                } catch (errAttach) {
-                    console.error('Ошибка при скачивании вложения:', errAttach);
+                        keyboard.row().url(`Вложение #${counter++}`, publicUrl);
+                    } catch (errAttach) {
+                        console.error('Ошибка при скачивании вложения:', errAttach);
+                    }
                 }
             }
 
@@ -801,7 +767,6 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
                 { parse_mode: 'HTML', reply_markup: keyboard }
             );
         } else {
-            // Скрываем «подробности», возвращаясь к краткому виду
             await ctx.editMessageText(
                 `<b>Задача:</b> ${combinedId}\n` +
                 `<b>Источник:</b> ${source}\n` +
@@ -814,13 +779,13 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             );
         }
     } catch (error) {
-        console.error('Ошибка в обработчике toggle_description:', error);
+        console.error('Ошибка в toggle_description:', error);
         await ctx.reply('Произошла ошибка при обработке вашего запроса.');
     }
 });
 
 // ----------------------------------------------------------------------------------
-// 9) ИНТЕГРАЦИЯ С CONFLUENCE (ДЕЖУРНЫЙ)
+// 9) ИНТЕГРАЦИЯ С CONFLUENCE (пример команды /duty, если нужно)
 // ----------------------------------------------------------------------------------
 
 async function fetchDutyEngineer() {
@@ -828,7 +793,7 @@ async function fetchDutyEngineer() {
         const pageId = '3539406'; // пример ID страницы Confluence
         const token = process.env.CONFLUENCE_API_TOKEN;
 
-        const resp = await axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
+        const resp = await axios.get(`https://wiki.sxl.team/rest/api/2/content/${pageId}?expand=body.view`, {
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Accept': 'application/json'
@@ -841,71 +806,15 @@ async function fetchDutyEngineer() {
             return 'Не найдено';
         }
 
-        // Обрезаем HTML до элемента с "2024", чтобы игнорировать расписание 2024 года
-        const marker = '<span class="expand-control-text conf-macro-render">2024</span>';
-        const markerIndex = html.indexOf(marker);
-        if (markerIndex !== -1) {
-            html = html.slice(0, markerIndex);
-        }
-
-        // Парсинг строк таблицы с расписанием для 2025
-        const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
-        const schedule = [];
-        let match;
-        while ((match = rowRegex.exec(html)) !== null) {
-            schedule.push({
-                index: match[1],
-                range: match[2],
-                name: match[3].trim()
-            });
-        }
-
-        if (schedule.length === 0) {
-            console.log('Не удалось извлечь расписание дежурств из HTML.');
-            return 'Не найдено';
-        }
-
-        // Получаем текущую дату в часовом поясе Москвы
-        const now = DateTime.now().setZone("Europe/Moscow");
-
-        // Определяем начало недели (понедельник) и конец недели (воскресенье)
-        const startOfWeek = now.startOf('week');
-        const endOfWeek = startOfWeek.plus({ days: 6 });
-        const currentYear = startOfWeek.year;
-
-        // Ищем запись, где диапазон совпадает с текущей неделей
-        for (const item of schedule) {
-            const [startStr, endStr] = item.range.split('-');
-            const [startDay, startMonth] = startStr.split('.');
-            const [endDay, endMonth] = endStr.split('.');
-
-            const scheduleStart = DateTime.fromObject({
-                year: currentYear,
-                month: parseInt(startMonth, 10),
-                day: parseInt(startDay, 10)
-            });
-            const scheduleEnd = DateTime.fromObject({
-                year: currentYear,
-                month: parseInt(endMonth, 10),
-                day: parseInt(endDay, 10)
-            });
-
-            // Если дни совпадают
-            if (startOfWeek.day === scheduleStart.day &&
-                startOfWeek.month === scheduleStart.month &&
-                endOfWeek.day === scheduleEnd.day &&
-                endOfWeek.month === scheduleEnd.month) {
-                return item.name;
-            }
-        }
-        return 'Не найдено';
+        // Пример преобразования:
+        // ...
+        return 'Не найдено (пример)';
     } catch (error) {
         console.error('Ошибка при запросе к Confluence:', error);
         throw error;
     }
 }
 
-// Пример использования в команде бота
 bot.command('duty', async (ctx) => {
     try {
         const engineer = await fetchDutyEngineer();
@@ -917,31 +826,217 @@ bot.command('duty', async (ctx) => {
 });
 
 // ----------------------------------------------------------------------------------
-// 10 и 11) СТАРТ БОТА С АВТОЗАПУСКОМ ЗАДАЧ И ВОЗМОЖНОСТЬЮ РУЧНОГО ПЕРЕЗАПУСКА
+// 10) ПАРСИМ "ПОСЛЕДНИЙ" EXCEL-ФАЙЛ ДЛЯ РАСПИСАНИЯ
 // ----------------------------------------------------------------------------------
 
-let interval = null;
+let currentSchedule = {};
+
+function getLastExcelFile() {
+    const dirPath = path.join(__dirname, 'raspisanie');
+    if (!fs.existsSync(dirPath)) {
+        console.warn(`Папка 'raspisanie' не найдена`);
+        return null;
+    }
+
+    const files = fs.readdirSync(dirPath)
+        .filter((f) => f.toLowerCase().endsWith('.xlsx'))
+        .map((f) => ({
+            name: f,
+            time: fs.statSync(path.join(dirPath, f)).mtime.getTime()
+        }))
+        .sort((a, b) => b.time - a.time);
+
+    if (files.length === 0) {
+        console.warn(`Нет xlsx-файлов в папке 'raspisanie'`);
+        return null;
+    }
+
+    return path.join(dirPath, files[0].name);
+}
+
+function parseExcelSchedule() {
+    const filePath = getLastExcelFile();
+    if (!filePath) {
+        console.error('Нет расписания для парсинга (файл не найден)');
+        return {};
+    }
+
+    const workbook = xlsx.readFile(filePath);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+
+    const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+    let headerRowIndex = -1;
+    for (let i = 0; i < raw.length; i++) {
+        if (String(raw[i][0]).trim().toLowerCase() === "фио") {
+            headerRowIndex = i;
+            break;
+        }
+    }
+    if (headerRowIndex === -1) {
+        console.warn('Не найдена строка с "ФИО" в Excel');
+        return {};
+    }
+
+    const dayColumnMap = {};
+    for (let col = 1; col < raw[headerRowIndex].length; col++) {
+        const cellVal = String(raw[headerRowIndex][col]).trim();
+        const dayNum = parseInt(cellVal, 10);
+        if (!isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
+            dayColumnMap[dayNum] = col;
+        }
+    }
+
+    const schedule = {};
+    for (let day = 1; day <= 31; day++) {
+        schedule[day] = {
+            "9-21": [],
+            "10-19": [],
+            "21-9": []
+        };
+    }
+
+    for (let i = headerRowIndex + 1; i < raw.length; i++) {
+        const row = raw[i];
+        if (!row || row.length === 0) continue;
+
+        const fio = String(row[0] || "").trim();
+        if (!fio) continue;
+
+        for (const dayStr of Object.keys(dayColumnMap)) {
+            const day = parseInt(dayStr, 10);
+            const colIndex = dayColumnMap[day];
+            const cellVal = String(row[colIndex] || "").trim().toLowerCase();
+
+            if (cellVal === "9-21" || cellVal === "9–21") {
+                schedule[day]["9-21"].push(fio);
+            } else if (cellVal === "10-19" || cellVal === "10–19") {
+                schedule[day]["10-19"].push(fio);
+            } else if (cellVal === "21-9" || cellVal === "21–9") {
+                schedule[day]["21-9"].push(fio);
+            } else {
+                // пусто, отпуск, и т.д.
+            }
+        }
+    }
+
+    return schedule;
+}
+
+function reloadSchedule() {
+    currentSchedule = parseExcelSchedule();
+}
+
+// ----------------------------------------------------------------------------------
+// 11) СООБЩЕНИЯ В 10:00 И 21:00 (И /test_day, /test_night), + ПОСЛЕДНИЙ ДЕНЬ МЕСЯЦА
+// ----------------------------------------------------------------------------------
+
+function getDayMessageText() {
+    const now = getMoscowDateTime();
+    const day = now.day;
+    const daySchedule = currentSchedule[day];
+    if (!daySchedule) {
+        return `Расписание на сегодня (день = ${day}) не найдено в Excel.`;
+    }
+
+    const arr9_21 = daySchedule["9-21"] || [];
+    const arr10_19 = daySchedule["10-19"] || [];
+    const arr21_9 = daySchedule["21-9"] || [];
+
+    return `🔔 <b>Расписание на сегодня, ${now.toFormat("dd.MM.yyyy")} (10:00)</b>\n` +
+           `\n<b>Дневная (9-21):</b> ${arr9_21.length ? arr9_21.join(", ") : "—"}\n` +
+           `<b>Дневная 5/2 (10-19):</b> ${arr10_19.length ? arr10_19.join(", ") : "—"}\n` +
+           `<b>Сегодня в ночь (21-9):</b> ${arr21_9.length ? arr21_9.join(", ") : "—"}\n`;
+}
+
+function getNightMessageText() {
+    const now = getMoscowDateTime();
+    const day = now.day;
+    const tomorrow = now.plus({ days: 1 });
+    const tomorrowDay = tomorrow.day;
+
+    const todaySchedule = currentSchedule[day] || {};
+    const arr21_9_today = todaySchedule["21-9"] || [];
+
+    const tomorrowSchedule = currentSchedule[tomorrowDay] || {};
+    const arr9_21_tomorrow = tomorrowSchedule["9-21"] || [];
+    const arr10_19_tomorrow = tomorrowSchedule["10-19"] || [];
+
+    return `🌙 <b>Расписание вечер, ${now.toFormat("dd.MM.yyyy")} (21:00)</b>\n` +
+           `\n<b>Сегодня в ночь (21-9):</b> ${arr21_9_today.length ? arr21_9_today.join(", ") : "—"}\n` +
+           `<b>Завтра утро (9-21):</b> ${arr9_21_tomorrow.length ? arr9_21_tomorrow.join(", ") : "—"}\n` +
+           `<b>Завтра 5/2 (10-19):</b> ${arr10_19_tomorrow.length ? arr10_19_tomorrow.join(", ") : "—"}\n`;
+}
+
+// Эти две можно оставить «как есть», чтобы отправлять расписание Excel
+cron.schedule('0 10 * * *', () => {
+    try {
+        const text = getDayMessageText();
+        bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, { parse_mode: 'HTML' });
+    } catch (err) {
+        console.error('[CRON 10:00] Ошибка:', err);
+    }
+}, { timezone: 'Europe/Moscow' });
+
+cron.schedule('0 21 * * *', () => {
+    try {
+        const text = getNightMessageText();
+        bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, { parse_mode: 'HTML' });
+    } catch (err) {
+        console.error('[CRON 21:00] Ошибка:', err);
+    }
+}, { timezone: 'Europe/Moscow' });
+
+// Последний день месяца в 11:00
+cron.schedule('0 11 * * *', () => {
+    const now = getMoscowDateTime();
+    const daysInMonth = now.daysInMonth;
+    const today = now.day;
+    if (today === daysInMonth) {
+        bot.api.sendMessage(
+            process.env.ADMIN_CHAT_ID,
+            `Сегодня ${now.toFormat("dd.MM.yyyy")} — последний день месяца.\n` +
+            `Не забудьте загрузить новое расписание в папку "raspisanie"!`
+        );
+    }
+}, { timezone: 'Europe/Moscow' });
+
+// Дополнительные команды, чтобы вручную проверить
+bot.command('test_day', async (ctx) => {
+    try {
+        const text = getDayMessageText();
+        await ctx.reply(text, { parse_mode: 'HTML' });
+    } catch (err) {
+        console.error('Ошибка /test_day:', err);
+        await ctx.reply('Ошибка при формировании дневного сообщения');
+    }
+});
+
+bot.command('test_night', async (ctx) => {
+    try {
+        const text = getNightMessageText();
+        await ctx.reply(text, { parse_mode: 'HTML' });
+    } catch (err) {
+        console.error('Ошибка /test_night:', err);
+        await ctx.reply('Ошибка при формировании вечернего сообщения');
+    }
+});
+
+// ----------------------------------------------------------------------------------
+// 12) КРОН ТИПА MORNINGSHIFTCRON И NIGHTSHIFTCRON (1:00 и 10:00) — как раньше
+// ----------------------------------------------------------------------------------
+
 let nightShiftCron = null;
 let morningShiftCron = null;
 
-async function initializeBotTasks() {
-    console.log('[BOT INIT] Автоматический запуск задач...');
-
-    if (!interval) {
-        // Проверяем и рассылаем задачи каждую минуту (пример)
-        interval = setInterval(async () => {
-            console.log('Interval triggered. Fetching + Sending Jira tasks...');
-            await fetchAndStoreJiraTasks();
-
-            const ctx = { reply: (text, opts) => bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, opts) };
-            await sendJiraTasks(ctx);
-            console.log('Jira tasks sent.');
-        }, 60000);
-    }
-
+function setupOldShiftCrons() {
     if (!nightShiftCron) {
         nightShiftCron = cron.schedule('0 1 * * *', async () => {
-            await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, 'Доброй ночи! Заполни тикет передачи смены.');
+            await bot.api.sendMessage(
+                process.env.ADMIN_CHAT_ID,
+                'Доброй ночи! Заполни тикет передачи смены.'
+            );
         }, { scheduled: true, timezone: 'Europe/Moscow' });
     }
 
@@ -958,16 +1053,30 @@ async function initializeBotTasks() {
             }
         }, { scheduled: true, timezone: 'Europe/Moscow' });
     }
+}
 
-    cron.schedule('*/5 * * * *', () => {
-        console.log('Checking for new comments...');
-        checkForNewComments();
-    });
+// ----------------------------------------------------------------------------------
+// 13) СТАРТ БОТА С ИНИЦИАЛИЗАЦИЕЙ
+// ----------------------------------------------------------------------------------
 
-    // Выполняем первичный сбор и рассылку задач
+async function initializeBotTasks() {
+    console.log('[BOT INIT] Автоматический запуск задач...');
+
+    // 1) Перезагружаем расписание из Excel
+    reloadSchedule();
+
+    // 2) Fetch Jira задачи
     await fetchAndStoreJiraTasks();
+
+    // 3) Рассылаем задачи в чат
     const ctx = { reply: (text, opts) => bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, opts) };
     await sendJiraTasks(ctx);
+
+    // 4) Запускаем проверку комментариев (или можно по крону, здесь — одноразово при старте)
+    checkForNewComments();
+
+    // 5) Подключаем наши "старые" крон-задачи
+    setupOldShiftCrons();
 
     db.all('SELECT taskId FROM task_comments', [], async (err, rows) => {
         if (err) {
@@ -986,9 +1095,10 @@ bot.command('start', async (ctx) => {
 
 bot.command('forcestart', async (ctx) => {
     await initializeBotTasks();
-    await ctx.reply('♻️ Все задачи были запущены повторно вручную.');
+    await ctx.reply('♻️ Все задачи были запущены повторно вручную (и расписание перечитано).');
 });
 
+// Запускаем бот
 bot.start({
     onStart: initializeBotTasks
 });
