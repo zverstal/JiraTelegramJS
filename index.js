@@ -70,10 +70,14 @@ function getPriorityEmoji(priority) {
 
 // Вспомогательная функция, которая отделяет "sxl-" или "betone-" от реального ключа
 function extractRealJiraKey(fullId) {
-    // Пример: "sxl-SUPPORT-123" → ["sxl", "SUPPORT", "123"] → realKey = "SUPPORT-123"
-    const parts = fullId.split('-');
-    parts.shift(); // убираем первый элемент (source)
-    return parts.join('-');
+    // Если идентификатор начинается с известных префиксов, удаляем их
+    if (fullId.startsWith('sxl-') || fullId.startsWith('betone-')) {
+        const parts = fullId.split('-');
+        parts.shift(); // удаляем префикс
+        return parts.join('-');
+    }
+    // Если префикс уже отсутствует, возвращаем как есть
+    return fullId;
 }
 
 // Генерация URL для Jira
