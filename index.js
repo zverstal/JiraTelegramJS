@@ -78,7 +78,6 @@ function extractRealJiraKey(fullId) {
 
 // Генерация URL для Jira
 function getTaskUrl(source, combinedId) {
-    // получаем реальный ключ "SUPPORT-123"
     const realKey = extractRealJiraKey(combinedId);
     return `https://jira.${source}.team/browse/${realKey}`;
 }
@@ -112,12 +111,9 @@ const jiraUserMappings = {
 const app = express();
 const ATTACHMENTS_DIR = path.join(__dirname, 'attachments');
 
-// Создаём папку, если нет
 if (!fs.existsSync(ATTACHMENTS_DIR)) {
     fs.mkdirSync(ATTACHMENTS_DIR);
 }
-
-// Раздаём статику по пути /attachments
 app.use('/attachments', express.static(ATTACHMENTS_DIR));
 
 // Допустим, запускаем на порту 3000
@@ -127,7 +123,7 @@ app.listen(PORT, () => {
 });
 
 // ----------------------------------------------------------------------------------
-// 3) КРОН ДЛЯ УДАЛЕНИЯ СТАРЫХ ФАЙЛОВ РАЗ В СУТКИ (в 3:00)
+// 3) КРОН ДЛЯ УДАЛЕНИЯ СТАРЫХ ФАЙЛОВ (в 3:00)
 // ----------------------------------------------------------------------------------
 
 cron.schedule('0 3 * * *', () => {
@@ -164,7 +160,7 @@ cron.schedule('0 3 * * *', () => {
 });
 
 // ----------------------------------------------------------------------------------
-// 4) ФУНКЦИИ ДЛЯ RABOTЫ С JIRA (ПОЛУЧЕНИЕ ЗАДАЧ, КОММЕНТОВ, ОБНОВЛЕНИЕ СТАТУСОВ)
+// 4) ФУНКЦИИ ДЛЯ RABOTЫ С JIRA
 // ----------------------------------------------------------------------------------
 
 async function fetchAndStoreJiraTasks() {
@@ -263,7 +259,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
                 );
             } else {
                 db.run(
-                    `INSERT OR REPLACE INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source)
+                    `INSERT INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source)
                      VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
                     [task.id, task.title, task.priority, task.issueType, task.department, task.dateAdded, task.source]
                 );
@@ -448,7 +444,7 @@ async function checkForNewComments() {
     }
 }
 
-// Лимитер на отправку, чтобы не «спамить» слишком быстро
+// Лимитер на отправку
 const limiter = new Bottleneck({
     minTime: 5000,
     maxConcurrent: 1
@@ -645,14 +641,14 @@ function parseCustomMarkdown(text) {
     text = formatTables(text);
 
     return text
-        .replace(/\*(.*?)\*/g, '<b>$1</b>')     
-        .replace(/_(.*?)_/g, '<i>$1</i>')       
-        .replace(/\+(.*?)\+/g, '<u>$1</u>')     
-        .replace(/~~(.*?)~~/g, '<s>$1</s>')     
-        .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3') 
-        .replace(/^\-\s(.*)/gm, '• $1')         
-        .replace(/^\*\s(.*)/gm, '• $1')         
-        .replace(/^\d+\.\s(.*)/gm, '🔹 $1')     
+        .replace(/\*(.*?)\*/g, '<b>$1</b>')
+        .replace(/_(.*?)_/g, '<i>$1</i>')
+        .replace(/\+(.*?)\+/g, '<u>$1</u>')
+        .replace(/~~(.*?)~~/g, '<s>$1</s>')
+        .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3')
+        .replace(/^\-\s(.*)/gm, '• $1')
+        .replace(/^\*\s(.*)/gm, '• $1')
+        .replace(/^\d+\.\s(.*)/gm, '🔹 $1')
         .replace(/\n{3,}/g, '\n\n');
 }
 
@@ -826,50 +822,79 @@ bot.command('duty', async (ctx) => {
 });
 
 // ----------------------------------------------------------------------------------
-// 10) ПАРСИМ "ПОСЛЕДНИЙ" EXCEL-ФАЙЛ ДЛЯ РАСПИСАНИЯ
+// 10) МНОГО ФАЙЛОВ, scheduleByMonthYear[year][month][day] = ...
 // ----------------------------------------------------------------------------------
-// Допустим, папка называется "raspisanie" и лежит рядом с index.js
-const RASPISANIE_DIR = path.join(__dirname, 'raspisanie');
 
-// Функция находит последний (по времени изменения) Excel-файл (*.xlsx)
-function getLastExcelFile() {
-    if (!fs.existsSync(RASPISANIE_DIR)) {
-        console.log('Папка не найдена:', RASPISANIE_DIR);
-        return null;
+// Словарь для распознавания месяцев из имени файла: "mart", "april", "may", ...
+const monthWords = {
+    january: 1,
+    february: 2,
+    mart: 3,
+    april: 4,
+    may: 5,
+    june: 6,
+    july: 7,
+    august: 8,
+    september: 9,
+    october: 10,
+    november: 11,
+    december: 12,
+};
+
+const scheduleByMonthYear = {}; 
+// структура: scheduleByMonthYear[год][месяц][dayNum] = { '9-21': [...], '10-19': [...], '21-9': [...] }
+
+// Парсим все .xlsx файлы в папке raspisanie
+function loadAllSchedules() {
+    const dirPath = path.join(__dirname, 'raspisanie');
+    if (!fs.existsSync(dirPath)) {
+        console.warn(`Папка 'raspisanie' не найдена`);
+        return;
     }
 
-    // Смотрим все .xlsx файлы
-    const allFiles = fs.readdirSync(RASPISANIE_DIR).filter(file => file.endsWith('.xlsx'));
-    if (allFiles.length === 0) {
-        console.log('В папке "raspisanie" нет XLSX-файлов.');
-        return null;
+    const files = fs.readdirSync(dirPath).filter(f => f.toLowerCase().endsWith('.xlsx'));
+    const re = /^([a-zA-Zа-яА-Я]+)_(\d{4})\.xlsx$/;
+
+    for (const file of files) {
+        const match = re.exec(file);
+        if (!match) {
+            console.warn(`Файл ${file} не соответствует шаблону "<monthWord>_<year>.xlsx"`);
+            continue;
+        }
+        const monthWord = match[1].toLowerCase(); // "mart", "april", ...
+        const yearNum = parseInt(match[2], 10);   // 2025, например
+
+        const monthNum = monthWords[monthWord]; // lookup
+        if (!monthNum) {
+            console.warn(`Неизвестный месяц '${monthWord}' в файле ${file}`);
+            continue;
+        }
+
+        // Парсим Excel
+        const filePath = path.join(dirPath, file);
+        const scheduleForMonth = parseOneExcelFile(filePath);
+
+        // Заполняем scheduleByMonthYear
+        if (!scheduleByMonthYear[yearNum]) {
+            scheduleByMonthYear[yearNum] = {};
+        }
+        scheduleByMonthYear[yearNum][monthNum] = scheduleForMonth;
     }
-
-    // Сортируем файлы по времени изменения (mtimeMs) — от нового к старому
-    allFiles.sort((a, b) => {
-        const aTime = fs.statSync(path.join(RASPISANIE_DIR, a)).mtimeMs;
-        const bTime = fs.statSync(path.join(RASPISANIE_DIR, b)).mtimeMs;
-        return bTime - aTime;
-    });
-
-    // Первый в отсортированном списке — самый "свежий"
-    const latestFile = allFiles[0];
-    return path.join(RASPISANIE_DIR, latestFile);
 }
 
-
-let currentSchedule = {};
-
-function parseExcelSchedule() {
-    const filePath = getLastExcelFile();
-    if (!filePath) return {};
-
+/**
+ * Парсит ОДИН Excel-файл с расписанием:
+ * - Ищет строку, где первая ячейка = "ФИО".
+ * - Далее считает, что [1..N] = дни (1..31).
+ * - Формирует объект: day => { '9-21': [...], '10-19': [...], '21-9': [...] }
+ */
+function parseOneExcelFile(filePath) {
     const workbook = xlsx.readFile(filePath);
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
+
     const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-    // Находим строку с ФИО
     let headerRowIndex = -1;
     for (let i = 0; i < raw.length; i++) {
         if (String(raw[i][0]).trim().toLowerCase() === "фио") {
@@ -877,51 +902,51 @@ function parseExcelSchedule() {
             break;
         }
     }
-    if (headerRowIndex === -1) return {};
-
-    // Находим строку с днями недели
-    const dayNames = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
-    let daysRowIndex = -1;
-    for (let i = 0; i < raw.length; i++) {
-        if (dayNames.includes(String(raw[i][1]).trim().toLowerCase())) {
-            daysRowIndex = i;
-            break;
-        }
+    if (headerRowIndex === -1) {
+        console.warn(`В файле ${path.basename(filePath)} не найдена строка "ФИО"`);
+        return {};
     }
 
-    const schedule = {};
+    // dayColumnMap[day] = colIndex
     const dayColumnMap = {};
-
-    // Создаем карту дней
     for (let col = 1; col < raw[headerRowIndex].length; col++) {
         const cellVal = String(raw[headerRowIndex][col]).trim();
         const dayNum = parseInt(cellVal, 10);
-        
-        // Проверяем что это число и соответствует дню недели
-        if (!isNaN(dayNum) && dayNum >= 1 && dayNum <= 31 &&
-            dayNames.includes(String(raw[daysRowIndex][col]).trim().toLowerCase())) {
+        if (!isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
             dayColumnMap[dayNum] = col;
         }
     }
 
-    // Парсим расписание
+    const schedule = {};
+    for (let d = 1; d <= 31; d++) {
+        schedule[d] = {
+            "9-21": [],
+            "10-19": [],
+            "21-9": []
+        };
+    }
+
+    // ниже идут строки с ФИО
     for (let i = headerRowIndex + 1; i < raw.length; i++) {
         const row = raw[i];
-        const fio = String(row[0] || "").trim();
+        if (!row || row.length === 0) continue;
+
+        const fio = String(row[0]).trim();
         if (!fio) continue;
 
-        for (const [day, colIndex] of Object.entries(dayColumnMap)) {
+        for (const dayStr of Object.keys(dayColumnMap)) {
+            const day = parseInt(dayStr, 10);
+            const colIndex = dayColumnMap[day];
             const cellVal = String(row[colIndex] || "").trim().toLowerCase();
-            if (!schedule[day]) {
-                schedule[day] = { "9-21": [], "10-19": [], "21-9": [] };
-            }
-            
+
             if (cellVal === "9-21" || cellVal === "9–21") {
                 schedule[day]["9-21"].push(fio);
             } else if (cellVal === "10-19" || cellVal === "10–19") {
                 schedule[day]["10-19"].push(fio);
             } else if (cellVal === "21-9" || cellVal === "21–9") {
                 schedule[day]["21-9"].push(fio);
+            } else {
+                // отпуск, пусто, пропуск
             }
         }
     }
@@ -929,20 +954,36 @@ function parseExcelSchedule() {
     return schedule;
 }
 
-function reloadSchedule() {
-    currentSchedule = parseExcelSchedule();
+/**
+ * Функция, чтобы получить расписание для конкретной даты (DateTime).
+ * Если нет файла для year/month, возвращаем null. Иначе – объект вида:
+ *   { dayNum => { '9-21': [...], '10-19': [...], '21-9': [...] } }
+ */
+function getScheduleForDate(dt) {
+    const year = dt.year;
+    const month = dt.month;
+    const day = dt.day;
+
+    const scheduleForYear = scheduleByMonthYear[year];
+    if (!scheduleForYear) {
+        return null;
+    }
+    const scheduleForMonth = scheduleForYear[month];
+    if (!scheduleForMonth) {
+        return null;
+    }
+    return scheduleForMonth[day] || null;
 }
 
 // ----------------------------------------------------------------------------------
-// 11) СООБЩЕНИЯ В 10:00 И 21:00 (И /test_day, /test_night), + ПОСЛЕДНИЙ ДЕНЬ МЕСЯЦА
+// 11) УТРО И ВЕЧЕР ИЗ РАСПИСАНИЯ
 // ----------------------------------------------------------------------------------
 
 function getDayMessageText() {
     const now = getMoscowDateTime();
-    const day = now.day;
-    const daySchedule = currentSchedule[day];
+    const daySchedule = getScheduleForDate(now);
     if (!daySchedule) {
-        return `Расписание на сегодня (день = ${day}) не найдено в Excel.`;
+        return `Расписание на сегодня (${now.toFormat("dd.MM.yyyy")}) не найдено.`;
     }
 
     const arr9_21 = daySchedule["9-21"] || [];
@@ -957,14 +998,12 @@ function getDayMessageText() {
 
 function getNightMessageText() {
     const now = getMoscowDateTime();
-    const day = now.day;
+    const todaySchedule = getScheduleForDate(now) || {};
+    
     const tomorrow = now.plus({ days: 1 });
-    const tomorrowDay = tomorrow.day;
+    const tomorrowSchedule = getScheduleForDate(tomorrow) || {};
 
-    const todaySchedule = currentSchedule[day] || {};
     const arr21_9_today = todaySchedule["21-9"] || [];
-
-    const tomorrowSchedule = currentSchedule[tomorrowDay] || {};
     const arr9_21_tomorrow = tomorrowSchedule["9-21"] || [];
     const arr10_19_tomorrow = tomorrowSchedule["10-19"] || [];
 
@@ -974,7 +1013,11 @@ function getNightMessageText() {
            `<b>Завтра 5/2 (10-19):</b> ${arr10_19_tomorrow.length ? arr10_19_tomorrow.join(", ") : "—"}\n`;
 }
 
-// Эти две можно оставить «как есть», чтобы отправлять расписание Excel
+// ----------------------------------------------------------------------------------
+// 12) КРОН ЗАДАЧИ (10:00, 21:00, последний день месяца в 11:00) + старые nightShiftCron/morningShiftCron
+// ----------------------------------------------------------------------------------
+
+// 10:00 — сообщение из Excel
 cron.schedule('0 10 * * *', () => {
     try {
         const text = getDayMessageText();
@@ -984,6 +1027,7 @@ cron.schedule('0 10 * * *', () => {
     }
 }, { timezone: 'Europe/Moscow' });
 
+// 21:00 — сообщение из Excel
 cron.schedule('0 21 * * *', () => {
     try {
         const text = getNightMessageText();
@@ -993,7 +1037,7 @@ cron.schedule('0 21 * * *', () => {
     }
 }, { timezone: 'Europe/Moscow' });
 
-// Последний день месяца в 11:00
+// Последний день месяца в 11:00 (напоминание)
 cron.schedule('0 11 * * *', () => {
     const now = getMoscowDateTime();
     const daysInMonth = now.daysInMonth;
@@ -1007,7 +1051,7 @@ cron.schedule('0 11 * * *', () => {
     }
 }, { timezone: 'Europe/Moscow' });
 
-// Дополнительные команды, чтобы вручную проверить
+// Дополнительные команды /test_day и /test_night
 bot.command('test_day', async (ctx) => {
     try {
         const text = getDayMessageText();
@@ -1028,10 +1072,7 @@ bot.command('test_night', async (ctx) => {
     }
 });
 
-// ----------------------------------------------------------------------------------
-// 12) КРОН ТИПА MORNINGSHIFTCRON И NIGHTSHIFTCRON (1:00 и 10:00) — как раньше
-// ----------------------------------------------------------------------------------
-
+// Старые nightShiftCron / morningShiftCron:
 let nightShiftCron = null;
 let morningShiftCron = null;
 
@@ -1048,6 +1089,7 @@ function setupOldShiftCrons() {
     if (!morningShiftCron) {
         morningShiftCron = cron.schedule('0 10 * * *', async () => {
             try {
+                // Пример: дополнительное утреннее сообщение "Доброе утро..."
                 const engineer = await fetchDutyEngineer();
                 await bot.api.sendMessage(
                     process.env.ADMIN_CHAT_ID,
@@ -1061,26 +1103,26 @@ function setupOldShiftCrons() {
 }
 
 // ----------------------------------------------------------------------------------
-// 13) СТАРТ БОТА С ИНИЦИАЛИЗАЦИЕЙ
+// 13) СТАРТ БОТА (initializeBotTasks, /start, /forcestart)
 // ----------------------------------------------------------------------------------
 
 async function initializeBotTasks() {
     console.log('[BOT INIT] Автоматический запуск задач...');
 
-    // 1) Перезагружаем расписание из Excel
-    reloadSchedule();
+    // 1) Загружаем все расписания
+    loadAllSchedules();
 
-    // 2) Fetch Jira задачи
+    // 2) Fetch Jira
     await fetchAndStoreJiraTasks();
 
-    // 3) Рассылаем задачи в чат
+    // 3) Отправляем задачи
     const ctx = { reply: (text, opts) => bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, opts) };
     await sendJiraTasks(ctx);
 
-    // 4) Запускаем проверку комментариев (или можно по крону, здесь — одноразово при старте)
+    // 4) Проверяем комментарии
     checkForNewComments();
 
-    // 5) Подключаем наши "старые" крон-задачи
+    // 5) Запускаем "старые" крон-задачи 1:00 / 10:00
     setupOldShiftCrons();
 
     db.all('SELECT taskId FROM task_comments', [], async (err, rows) => {
@@ -1095,7 +1137,7 @@ async function initializeBotTasks() {
 }
 
 bot.command('start', async (ctx) => {
-    await ctx.reply('✅ Бот уже работает. Все задачи запущены. Если хочешь запустить задачи повторно, используй /forcestart');
+    await ctx.reply('✅ Бот работает. Все задачи запущены. Для перезапуска: /forcestart');
 });
 
 bot.command('forcestart', async (ctx) => {
@@ -1103,7 +1145,7 @@ bot.command('forcestart', async (ctx) => {
     await ctx.reply('♻️ Все задачи были запущены повторно вручную (и расписание перечитано).');
 });
 
-// Запускаем бот
+// Запускаем бота
 bot.start({
     onStart: initializeBotTasks
 });
