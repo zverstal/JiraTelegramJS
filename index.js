@@ -676,8 +676,16 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             source = task.source;
             issue = await getJiraTaskDetails(source, combinedId);
         } else {
-            // Если запись не найдена в БД, извлекаем источник из combinedId
-            source = combinedId.split('-')[0];
+            // Если запись не найдена в БД, пытаемся извлечь источник из текста сообщения.
+            const text = ctx.callbackQuery.message?.text || "";
+            const sourceRegex = /Источник:\s*([^\n]+)/i;
+            const match = text.match(sourceRegex);
+            if (match && match[1]) {
+                source = match[1].trim();
+            } else {
+                // Если извлечь не удалось, используем fallback
+                source = combinedId.split('-')[0];
+            }
             issue = await getJiraTaskDetails(source, combinedId);
         }
 
@@ -787,6 +795,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.reply('Произошла ошибка при обработке вашего запроса.');
     }
 });
+
 
 // ----------------------------------------------------------------------------------
 // 9) ИНТЕГРАЦИЯ С CONFLUENCE (пример команды /duty, если нужно)
