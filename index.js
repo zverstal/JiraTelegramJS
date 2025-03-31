@@ -806,9 +806,9 @@ async function fetchDutyEngineer() {
         const pageId = '3539406'; // пример ID страницы Confluence
         const token = process.env.CONFLUENCE_API_TOKEN;
 
-        const resp = await axios.get(https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view, {
+        const resp = await axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
             headers: {
-                'Authorization': Bearer ${token},
+                'Authorization': `Bearer ${token}`,
                 'Accept': 'application/json'
             }
         });
@@ -847,8 +847,8 @@ async function fetchDutyEngineer() {
         const now = DateTime.now().setZone("Europe/Moscow");
 
         // Определяем начало недели (понедельник) и конец недели (воскресенье)
-        const startOfWeek = now.startOf('week');
-        const endOfWeek = startOfWeek.plus({ days: 6 });
+        const startOfWeek = now.startOf('week'); // понедельник
+        const endOfWeek = startOfWeek.plus({ days: 6 }); // воскресенье
         const currentYear = startOfWeek.year;
 
         // Ищем запись, где диапазон совпадает с текущей неделей
@@ -868,31 +868,34 @@ async function fetchDutyEngineer() {
                 day: parseInt(endDay, 10)
             });
 
-            // Если дни совпадают
-            if (startOfWeek.day === scheduleStart.day &&
+            if (
+                startOfWeek.day === scheduleStart.day &&
                 startOfWeek.month === scheduleStart.month &&
                 endOfWeek.day === scheduleEnd.day &&
-                endOfWeek.month === scheduleEnd.month) {
+                endOfWeek.month === scheduleEnd.month
+            ) {
                 return item.name;
             }
         }
+
         return 'Не найдено';
     } catch (error) {
         console.error('Ошибка при запросе к Confluence:', error);
-        throw error;
+        return 'Не найдено';
     }
 }
 
-// Пример использования в команде бота
+// Команда /duty
 bot.command('duty', async (ctx) => {
     try {
         const engineer = await fetchDutyEngineer();
-        await ctx.reply(Дежурный: ${engineer});
+        await ctx.reply(`Дежурный: ${engineer}`);
     } catch (err) {
         console.error('Ошибка duty:', err);
         await ctx.reply('Произошла ошибка при запросе дежурного.');
     }
 });
+
 
 // ----------------------------------------------------------------------------------
 // 10) МНОГО ФАЙЛОВ, scheduleByMonthYear[year][month][day] = ...
