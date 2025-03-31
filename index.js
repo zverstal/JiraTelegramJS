@@ -1055,11 +1055,13 @@ function getScheduleForDate(dt) {
 // 11) УТРО И ВЕЧЕР ИЗ РАСПИСАНИЯ
 // ----------------------------------------------------------------------------------
 
-function getDayMessageText() {
+async function getDayMessageText() {
     const now = getMoscowDateTime();
     const daySchedule = getScheduleForDate(now);
+    const engineer = await fetchDutyEngineer(); // добавляем
+
     if (!daySchedule) {
-        return `Расписание на сегодня (${now.toFormat("dd.MM.yyyy")}) не найдено.`;
+        return `Расписание на сегодня (${now.toFormat("dd.MM.yyyy")}) не найдено.\n<b>Дежурный специалист DevOPS:</b> ${engineer}`;
     }
 
     const arr9_21 = daySchedule["9-21"] || [];
@@ -1069,8 +1071,10 @@ function getDayMessageText() {
     return `🔔 <b>Расписание на сегодня, ${now.toFormat("dd.MM.yyyy")} (10:00)</b>\n` +
            `\n<b>Дневная (9-21):</b> ${arr9_21.length ? arr9_21.join(", ") : "—"}\n` +
            `<b>Дневная 5/2 (10-19):</b> ${arr10_19.length ? arr10_19.join(", ") : "—"}\n` +
-           `<b>Сегодня в ночь (21-9):</b> ${arr21_9.length ? arr21_9.join(", ") : "—"}\n`;
+           `<b>Сегодня в ночь (21-9):</b> ${arr21_9.length ? arr21_9.join(", ") : "—"}\n` +
+           `\n<b>Дежурный специалист DevOPS:</b> ${engineer}`;
 }
+
 
 async function getNightMessageText() {
     const now = getMoscowDateTime();
@@ -1131,24 +1135,26 @@ cron.schedule('*/5 * * * *', async () => {
 });
 
 
-cron.schedule('0 10 * * *', () => {
+cron.schedule('0 10 * * *', async () => {
     try {
-        const text = getDayMessageText();
-        bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, { parse_mode: 'HTML' });
+        const text = await getDayMessageText(); // ⬅ await
+        await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, { parse_mode: 'HTML' });
     } catch (err) {
         console.error('[CRON 10:00] Ошибка:', err);
     }
 }, { timezone: 'Europe/Moscow' });
 
+
 // 21:00 — сообщение из Excel
-cron.schedule('0 21 * * *', () => {
+cron.schedule('0 21 * * *', async () => {
     try {
-        const text = getNightMessageText();
-        bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, { parse_mode: 'HTML' });
+        const text = await getNightMessageText(); // ⬅ ждём текст
+        await bot.api.sendMessage(process.env.ADMIN_CHAT_ID, text, { parse_mode: 'HTML' });
     } catch (err) {
         console.error('[CRON 21:00] Ошибка:', err);
     }
 }, { timezone: 'Europe/Moscow' });
+
 
 // Последний день месяца в 11:00 (напоминание)
 cron.schedule('0 11 * * *', () => {
@@ -1167,7 +1173,7 @@ cron.schedule('0 11 * * *', () => {
 // Дополнительные команды /test_day и /test_night
 bot.command('test_day', async (ctx) => {
     try {
-        const text = getDayMessageText();
+        const text = await getDayMessageText(); // ⬅ await
         await ctx.reply(text, { parse_mode: 'HTML' });
     } catch (err) {
         console.error('Ошибка /test_day:', err);
@@ -1175,15 +1181,17 @@ bot.command('test_day', async (ctx) => {
     }
 });
 
+
 bot.command('test_night', async (ctx) => {
     try {
-        const text = getNightMessageText();
+        const text = await getNightMessageText(); // ⬅ исправить здесь
         await ctx.reply(text, { parse_mode: 'HTML' });
     } catch (err) {
         console.error('Ошибка /test_night:', err);
         await ctx.reply('Ошибка при формировании вечернего сообщения');
     }
 });
+
 
 // Старые nightShiftCron / morningShiftCron:
 let nightShiftCron = null;
