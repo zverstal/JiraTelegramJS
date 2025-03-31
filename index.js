@@ -661,6 +661,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.answerCallbackQuery();
         const combinedId = ctx.match[1];
 
+        // Попытка получить задачу из локальной БД
         let task = await new Promise(resolve => {
             db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
         });
@@ -670,15 +671,18 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         if (task) {
             source = task.source;
             issue = await getJiraTaskDetails(source, combinedId);
+        } else {
+            // Если запись не найдена в БД, извлекаем источник из combinedId
+            source = combinedId.split('-')[0];
+            issue = await getJiraTaskDetails(source, combinedId);
         }
 
-        // Если не удалось — пробуем явно sxl, betone
+        // Если не удалось получить данные по первому источнику – пробуем альтернативный
         if (!issue) {
-            issue = await getJiraTaskDetails('sxl', combinedId);
-            if (issue) source = 'sxl';
-            else {
-                issue = await getJiraTaskDetails('betone', combinedId);
-                if (issue) source = 'betone';
+            const alternateSource = source === 'sxl' ? 'betone' : 'sxl';
+            issue = await getJiraTaskDetails(alternateSource, combinedId);
+            if (issue) {
+                source = alternateSource;
             }
         }
 
@@ -724,7 +728,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
             .url('Открыть в Jira', taskUrl);
 
         if (!isExpanded) {
-            // При раскрытии добавляем ссылки на вложения
+            // При раскрытии добавляем ссылки на вложения, если они есть
             if (issue.fields.attachment && Array.isArray(issue.fields.attachment)) {
                 let counter = 1;
                 for (const att of issue.fields.attachment) {
