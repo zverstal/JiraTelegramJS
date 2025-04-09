@@ -477,6 +477,9 @@ async function getJiraTaskDetails(source, combinedId) {
   }
 }
 
+// Глобальный кэш для хранения message_id по task.id
+const messageIdCache = {};
+
 async function sendJiraTasks(ctx) {
   const today = getMoscowTimestamp().split(' ')[0];
   const query = `
@@ -500,7 +503,7 @@ async function sendJiraTasks(ctx) {
           .url('Перейти к задаче', getTaskUrl(task.source, task.id))
           .text('⬇ Подробнее', `toggle_description:${task.id}`);
       }
-      // Формируем сообщение для задачи
+      
       const messageText =
         `Задача: ${task.id}\n` +
         `Источник: ${task.source}\n` +
@@ -509,16 +512,19 @@ async function sendJiraTasks(ctx) {
         `Приоритет: ${getPriorityEmoji(task.priority)}\n` +
         `Тип задачи: ${task.issueType}\n` +
         `Исполнитель: ${task.assignee}\n` +
-        //`Логин исполнителя: ${task.assigneeLogin}\n` +
         `Создатель задачи: ${task.reporter}\n` +
-        //`Логин создателя: ${task.reporterLogin}\n` +
         `Статус: ${task.status}`;
-      await ctx.reply(messageText, { reply_markup: keyboard });
+      
+      // Отправляем сообщение и сохраняем message_id
+      const sentMessage = await ctx.reply(messageText, { reply_markup: keyboard });
+      messageIdCache[task.id] = sentMessage.message_id;
+      
       const moscowTimestamp = getMoscowTimestamp();
       db.run('UPDATE tasks SET lastSent = ? WHERE id = ?', [moscowTimestamp, task.id]);
     }
   });
 }
+
 
 // ----------------------------------------------------------------------------------
 // 6) Проверка новых комментариев
@@ -638,6 +644,8 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
     const taskType = issue.fields.issuetype?.name || 'Не указан';
     const summary = issue.fields.summary || 'Без названия';
     const statusName = issue.fields.status?.name || 'Не указан';
+    const commentAuthor = lastComment.author?.displayName || lastComment.author?.name || authorName;
+
     
     const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
     const MAX_LEN = 300;
@@ -658,6 +666,7 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
       `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
       `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
       `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
+      `<b>Автор комментария:</b> ${escapeHtml(commentAuthor)}\n` +
       `<b>Статус:</b> ${escapeHtml(statusName)}\n` +
       `<b>Комментарий:</b>\n`;
     
@@ -760,6 +769,7 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const combinedId = ctx.match[1];
     const telegramUsername = ctx.from.username;
+    
     db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], async (err, task) => {
       if (err) {
         console.error('Ошибка при получении задачи:', err);
@@ -767,12 +777,14 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
       }
       if (!task) return ctx.reply('Задача не найдена в БД.');
       if (task.department !== "Техническая поддержка") return ctx.reply('Эта задача не для ТП; нельзя взять в работу через бота.');
+      
       let success = false;
       try {
         success = await updateJiraTaskStatus(task.source, combinedId, telegramUsername);
       } catch (errUpd) {
         console.error('Ошибка updateJiraTaskStatus:', errUpd);
       }
+      
       if (success) {
         db.run(
           `INSERT INTO user_actions (username, taskId, action, timestamp)
@@ -781,6 +793,32 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
         );
         const displayName = usernameMappings[telegramUsername] || telegramUsername;
         await ctx.reply(`OK, задачу ${combinedId} взял в работу: ${displayName}.`);
+        
+        // Получаем обновлённые данные задачи из Jira
+        const updatedIssue = await getJiraTaskDetails(task.source, combinedId);
+        if (!updatedIssue) {
+          console.error('Не удалось получить обновленные данные из Jira.');
+          return;
+        }
+        // Формируем новый текст сообщения с актуальными данными, в частности, обновляем поле "Исполнитель"
+        const newMessageText =
+          `Задача: ${combinedId}\n` +
+          `Источник: ${task.source}\n` +
+          `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
+          `Описание: ${updatedIssue.fields.summary || task.title}\n` +
+          `Приоритет: ${getPriorityEmoji(updatedIssue.fields.priority?.name || task.priority)}\n` +
+          `Тип задачи: ${updatedIssue.fields.issuetype?.name || task.issueType}\n` +
+          `Исполнитель: ${updatedIssue.fields.assignee ? getHumanReadableName(updatedIssue.fields.assignee.name, updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name, task.source) : 'Никто'}\n` +
+          `Создатель задачи: ${task.reporter}\n` +
+          `Статус: ${updatedIssue.fields.status?.name || task.status}`;
+        
+        // Если у нас сохранился message_id, редактируем сообщение
+        const messageId = messageIdCache[combinedId];
+        if (messageId) {
+          await bot.api.editMessageText(process.env.ADMIN_CHAT_ID, messageId, undefined, newMessageText, { parse_mode: 'HTML' });
+        }
+        
+        // Дополнительно, можно вызвать reassignIssueToRealUser через 30 сек, как раньше
         setTimeout(async () => {
           const realKey = extractRealJiraKey(combinedId);
           const reassignOk = await reassignIssueToRealUser(task.source, realKey, telegramUsername);
