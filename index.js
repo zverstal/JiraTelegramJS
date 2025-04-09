@@ -936,93 +936,92 @@ function formatDescriptionAsHtml(rawDescription) {
 // 8) Callback "toggle_description" для переключения описания задачи
 // ----------------------------------------------------------------------------------
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
-  try {
-    await ctx.answerCallbackQuery();
-    const combinedId = ctx.match[1];
-    // Сначала получаем источник из БД или из сообщения
-    let rowFromDb = await new Promise(resolve => {
-      db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
-    });
-    let source = rowFromDb?.source;
-    if (!source) {
-      const txt = ctx.callbackQuery.message?.text || "";
-      const match = txt.match(/Источник:\s*([^\n]+)/i);
-      source = match ? match[1].trim() : combinedId.split('-')[0];
+    try {
+      await ctx.answerCallbackQuery();
+      const combinedId = ctx.match[1];
+      let rowFromDb = await new Promise(resolve => {
+        db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
+      });
+      let source = rowFromDb?.source;
+      if (!source) {
+        const txt = ctx.callbackQuery.message?.text || "";
+        const match = txt.match(/Источник:\s*([^\n]+)/i);
+        if (match) {
+          source = match[1].trim();
+        } else {
+          source = combinedId.split('-')[0];
+        }
+      }
+      const issue = await getJiraTaskDetails(source, combinedId);
+      if (!issue) {
+        return ctx.reply('Не удалось получить данные задачи из Jira.');
+      }
+      const summary = issue.fields.summary || 'Без названия';
+      const description = issue.fields.description || 'Нет описания';
+      const statusName = issue.fields.status?.name || '—';
+      const priority = issue.fields.priority?.name || 'None';
+      const taskType = issue.fields.issuetype?.name || '—';
+      const assigneeObj = issue.fields.assignee || null;
+      const priorityEmoji = getPriorityEmoji(priority);
+      let assigneeText = 'Никто';
+      if (assigneeObj) {
+        assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
+      }
+      // Добавляем: Создатель задачи (reporter)
+      const reporterObj = issue.fields.reporter || null;
+      let reporterText = 'Не указан';
+      let reporterLogin = 'Не указан';
+      if (reporterObj) {
+        reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
+        reporterLogin = reporterObj.name;
+      }
+      const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
+      const isExpanded = currentText.endsWith("...");
+      const keyboard = new InlineKeyboard();
+      if (rowFromDb?.department === "Техническая поддержка" && statusName === "Open") {
+        keyboard.text('Взять в работу', `take_task:${combinedId}`);
+      }
+      keyboard
+        .text(isExpanded ? 'Подробнее' : 'Скрыть', `toggle_description:${combinedId}`)
+        .url('Открыть в Jira', `https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}`);
+      if (!isExpanded) {
+        const safeDesc = formatDescriptionAsHtml(description);
+        await ctx.editMessageText(
+          `<b>Задача:</b> ${combinedId}\n` +
+          `<b>Источник:</b> ${source}\n` +
+          `<b>Приоритет:</b> ${priorityEmoji}\n` +
+          `<b>Тип задачи:</b> ${taskType}\n` +
+          `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+          `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
+          //`<b>Логин исполнителя:</b> ${escapeHtml(assigneeObj ? assigneeObj.name : 'Не указан')}\n` +
+          `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
+          //`<b>Логин создателя:</b> ${escapeHtml(reporterLogin)}\n` +
+          `<b>Статус:</b> ${escapeHtml(statusName)}\n\n` +
+          `<b>Описание:</b>\n${safeDesc}\n\n...`,
+          { parse_mode: 'HTML', reply_markup: keyboard }
+        );
+      } else {
+        await ctx.editMessageText(
+          `<b>Задача:</b> ${combinedId}\n` +
+          `<b>Источник:</b> ${source}\n` +
+          `<b>Ссылка:</b> <a href="https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}">Открыть в Jira</a>\n` +
+          `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+          `<b>Приоритет:</b> ${priorityEmoji}\n` +
+          `<b>Тип задачи:</b> ${taskType}\n` +
+          `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
+          //`<b>Логин исполнителя:</b> ${escapeHtml(assigneeObj ? assigneeObj.name : 'Не указан')}\n` +
+          `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
+          //`<b>Логин создателя:</b> ${escapeHtml(reporterLogin)}\n` +
+          `<b>Статус:</b> ${escapeHtml(statusName)}\n`,
+          { parse_mode: 'HTML', reply_markup: keyboard }
+        );
+      }
+    } catch (err) {
+      console.error('toggle_description error:', err);
+      await ctx.reply('Ошибка при обработке toggle_description');
     }
-    // Запрашиваем актуальные данные задачи из Jira
-    const issue = await getJiraTaskDetails(source, combinedId);
-    if (!issue) return ctx.reply('Не удалось получить данные задачи из Jira.');
-  
-    const summary = issue.fields.summary || 'Без названия';
-    const description = issue.fields.description || 'Нет описания';
-    const statusName = issue.fields.status?.name || '—';
-    const priority = issue.fields.priority?.name || 'None';
-    const taskType = issue.fields.issuetype?.name || '—';
-    const assigneeObj = issue.fields.assignee || null;
-    const priorityEmoji = getPriorityEmoji(priority);
-    let assigneeText = 'Никто';
-    if (assigneeObj) {
-      assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
-    }
-    const reporterObj = issue.fields.reporter || issue.fields.creator || null;
-    let reporterText = 'Не указан';
-    let reporterLogin = 'Не указан';
-    if (reporterObj) {
-      reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
-      reporterLogin = reporterObj.name;
-    }
-  
-    // Определяем, раскрыто ли описание. Для этого можно проверять наличие раздела "Описание:" и окончание строки.
-    const currentText = ctx.callbackQuery.message?.text || "";
-    const isExpanded = currentText.includes('<b>Описание:</b>') && currentText.includes(description);
-  
-    const keyboard = new InlineKeyboard();
-    if (rowFromDb?.department === "Техническая поддержка" && statusName === "Open") {
-      keyboard.text('Взять в работу', `take_task:${combinedId}`);
-    }
-    // Используем одну кнопку для переключения
-    keyboard
-      .text('Toggle описание', `toggle_description:${combinedId}`)
-      .url('Открыть в Jira', `https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}`);
-  
-    if (!isExpanded) {
-      // Раскрываем: показываем полное описание
-      const safeDesc = formatDescriptionAsHtml(description);
-      await ctx.editMessageText(
-        `<b>Задача:</b> ${combinedId}\n` +
-        `<b>Источник:</b> ${source}\n` +
-        `<b>Приоритет:</b> ${priorityEmoji}\n` +
-        `<b>Тип задачи:</b> ${taskType}\n` +
-        `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
-        `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
-        //`<b>Логин исполнителя:</b> ${escapeHtml(assigneeObj ? assigneeObj.name : 'Не указан')}\n` +
-        `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
-        //`<b>Логин создателя:</b> ${escapeHtml(reporterLogin)}\n` +
-        `<b>Статус:</b> ${escapeHtml(statusName)}\n\n` +
-        `<b>Описание:</b>\n${safeDesc}`,
-        { parse_mode: 'HTML', reply_markup: keyboard }
-      );
-    } else {
-      // Сворачиваем: убираем описание (оставляем только основные поля)
-      await ctx.editMessageText(
-        `<b>Задача:</b> ${combinedId}\n` +
-        `<b>Источник:</b> ${source}\n` +
-        `<b>Приоритет:</b> ${priorityEmoji}\n` +
-        `<b>Тип задачи:</b> ${taskType}\n` +
-        `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
-        `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
-        //`<b>Логин исполнителя:</b> ${escapeHtml(assigneeObj ? assigneeObj.name : 'Не указан')}\n` +
-        `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
-        //`<b>Логин создателя:</b> ${escapeHtml(reporterLogin)}\n` +
-        `<b>Статус:</b> ${escapeHtml(statusName)}`,
-        { parse_mode: 'HTML', reply_markup: keyboard }
-      );
-    }
-  } catch (err) {
-    console.error('toggle_description error:', err);
-    await ctx.reply('Ошибка при обработке toggle_description');
-  }
-});
+  });
+
 
 // ----------------------------------------------------------------------------------
 // 7) КНОПКА "ВЗЯТЬ В РАБОТУ"
