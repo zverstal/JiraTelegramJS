@@ -664,30 +664,27 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   const commentDisplayRaw = lastComment.author?.displayName || authorName;
   const commentAuthor = getHumanReadableName(commentAuthorRaw, commentDisplayRaw, source);
 
-  // Парсим комментарий (Markdown → HTML) и удаляем !файл|thumbnail!
   let fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
   fullCommentHtml = fullCommentHtml.replace(/!\S+?\|thumbnail!/gi, '');
 
   const MAX_LEN = 300;
   const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
 
-  // Только вложения из комментария
-  const rawAttachments = lastComment.attachments || [];
-  const seenFiles = new Set();
-  const attachments = rawAttachments.filter(att => {
-    if (!att?.filename) return false;
-    const norm = att.filename.toLowerCase();
-    if (seenFiles.has(norm)) return false;
-    seenFiles.add(norm);
-    return true;
-  });
+  // --- Новый блок: фильтрация только тех вложений, что явно упомянуты в комментарии ---
+  const mentionedFiles = Array.from(
+    (lastComment.body || '').matchAll(/!(.+?)\|thumbnail!/gi),
+    m => m[1].trim().toLowerCase()
+  );
 
-  // Добавляем кнопку "Развернуть", если длинный комментарий или есть вложения
+  const attachments = (issue.fields.attachment || []).filter(att => {
+    return att?.filename && mentionedFiles.includes(att.filename.trim().toLowerCase());
+  });
+  // --- Конец нового блока ---
+
   if (fullCommentHtml.length > MAX_LEN || attachments.length > 0) {
     keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
   }
 
-  // Добавляем кнопки на вложения из комментария
   if (attachments.length > 0) {
     let attachmentCounter = 1;
     const currentTunnelUrl = process.env.PUBLIC_BASE_URL;
@@ -745,6 +742,7 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     parse_mode: 'HTML'
   }).catch(e => console.error('Error sending message to Telegram:', e));
 }
+
 
 
 
