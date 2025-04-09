@@ -664,49 +664,13 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   const commentDisplayRaw = lastComment.author?.displayName || authorName;
   const commentAuthor = getHumanReadableName(commentAuthorRaw, commentDisplayRaw, source);
 
-  let fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
-  fullCommentHtml = fullCommentHtml.replace(/!\S+?\|thumbnail!/gi, '');
+  const rawCommentBody = lastComment.body || '';
+  const hasThumbnail = !!rawCommentBody.match(/!\S+?\|thumbnail!/gi);
 
-  const MAX_LEN = 300;
-  const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
-
-  // --- Новый блок: фильтрация только тех вложений, что явно упомянуты в комментарии ---
-  const mentionedFiles = Array.from(
-    (lastComment.body || '').matchAll(/!(.+?)\|thumbnail!/gi),
-    m => m[1].trim().toLowerCase()
-  );
-
-  const attachments = (issue.fields.attachment || []).filter(att => {
-    return att?.filename && mentionedFiles.includes(att.filename.trim().toLowerCase());
-  });
-  // --- Конец нового блока ---
-
-  if (fullCommentHtml.length > MAX_LEN || attachments.length > 0) {
-    keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
-  }
-
-  if (attachments.length > 0) {
-    let attachmentCounter = 1;
-    const currentTunnelUrl = process.env.PUBLIC_BASE_URL;
-    for (const att of attachments) {
-      try {
-        const fileResp = await axios.get(att.content, {
-          responseType: 'arraybuffer',
-          headers: {
-            'Authorization': `Bearer ${source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
-          }
-        });
-        const originalFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
-        const finalName = `${uuidv4()}_${originalFilename}`;
-        const filePath = path.join(ATTACHMENTS_DIR, finalName);
-        fs.writeFileSync(filePath, fileResp.data);
-        const publicUrl = `${currentTunnelUrl}/attachments/${finalName}`;
-        keyboard.row().url(`Вложение #${attachmentCounter++}`, publicUrl);
-      } catch (errAttach) {
-        console.error('Ошибка при скачивании вложения из комментария:', errAttach);
-      }
-    }
-  }
+  let fullCommentHtml = parseCustomMarkdown(rawCommentBody).replace(/!\S+?\|thumbnail!/gi, '');
+  const shortCommentHtml = hasThumbnail
+    ? '📎 В комментарии вложение, нажми "Развернуть" для просмотра'
+    : safeTruncateHtml(fullCommentHtml, 300);
 
   const prefix = isOurComment
     ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
@@ -729,8 +693,13 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     header: prefix + header,
     shortHtml: shortCommentHtml,
     fullHtml: fullCommentHtml,
+    attachments: lastComment.attachments || [],
     source: source
   };
+
+  if (hasThumbnail || fullCommentHtml.length > 300 || (lastComment.attachments || []).length > 0) {
+    keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
+  }
 
   let finalText = commentCache[cacheKey].header + shortCommentHtml;
   finalText = finalText.replace(/<span>/gi, '<tg-spoiler>').replace(/<\/span>/gi, '</tg-spoiler>');
@@ -743,9 +712,6 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   }).catch(e => console.error('Error sending message to Telegram:', e));
 }
 
-
-
-
 bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
@@ -753,56 +719,45 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
     const commentId = ctx.match[2];
     const cacheKey = `${combinedId}:${commentId}`;
     const data = commentCache[cacheKey];
-    if (!data) {
-      return ctx.reply('Комментарий не найден в кеше (возможно, бот был перезапущен?)');
-    }
+    if (!data) return ctx.reply('Комментарий не найден в кеше.');
 
     const keyboard = new InlineKeyboard()
       .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
       .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
 
-    // Получаем вложения повторно — только из комментария
-    const [source, realKey] = [data.source, extractRealJiraKey(combinedId)];
-    const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
-    const issueResp = await axios.get(`https://jira.${source}.team/rest/api/2/issue/${realKey}?fields=comment`, {
-      headers: { Authorization: `Bearer ${pat}` }
-    });
-
-    const comments = issueResp.data.fields.comment?.comments || [];
-    const targetComment = comments.find(c => c.id === commentId);
-    const attachments = (targetComment?.attachments || []).filter(a => !!a?.filename);
-
-    let attachmentCounter = 1;
-    for (const att of attachments) {
-      try {
-        const fileResp = await axios.get(att.content, {
-          responseType: 'arraybuffer',
-          headers: { Authorization: `Bearer ${pat}` }
-        });
-        const sanitizedFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
-        const finalName = `${uuidv4()}_${sanitizedFilename}`;
-        const filePath = path.join(ATTACHMENTS_DIR, finalName);
-        fs.writeFileSync(filePath, fileResp.data);
-        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
-        keyboard.row().url(`Вложение #${attachmentCounter++}`, publicUrl);
-      } catch (err) {
-        console.error('Ошибка при скачивании вложения в expand_comment:', err);
+    // Добавляем вложения (если есть)
+    if (data.attachments && data.attachments.length > 0) {
+      let counter = 1;
+      const tunnel = process.env.PUBLIC_BASE_URL;
+      for (const att of data.attachments) {
+        try {
+          const fileResp = await axios.get(att.content, {
+            responseType: 'arraybuffer',
+            headers: {
+              'Authorization': `Bearer ${data.source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
+            }
+          });
+          const safeName = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
+          const finalName = `${uuidv4()}_${safeName}`;
+          const filePath = path.join(ATTACHMENTS_DIR, finalName);
+          fs.writeFileSync(filePath, fileResp.data);
+          const publicUrl = `${tunnel}/attachments/${finalName}`;
+          keyboard.row().url(`Вложение #${counter++}`, publicUrl);
+        } catch (errAttach) {
+          console.error('Ошибка загрузки вложения:', errAttach);
+        }
       }
     }
 
-    const newText = data.header + data.fullHtml;
-    console.log('[DEBUG] Expand comment newText:', newText);
-    await ctx.editMessageText(newText, {
+    await ctx.editMessageText(data.header + data.fullHtml, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
-
   } catch (err) {
     console.error('expand_comment error:', err);
     await ctx.reply('Ошибка при раскрытии комментария.');
   }
 });
-
 
 bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
   try {
@@ -811,16 +766,13 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
     const commentId = ctx.match[2];
     const cacheKey = `${combinedId}:${commentId}`;
     const data = commentCache[cacheKey];
-    if (!data) {
-      return ctx.reply('Комментарий не найден в кеше.');
-    }
+    if (!data) return ctx.reply('Комментарий не найден в кеше.');
 
-    const newText = data.header + data.shortHtml;
     const keyboard = new InlineKeyboard()
       .text('Развернуть', `expand_comment:${combinedId}:${commentId}`)
       .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
 
-    await ctx.editMessageText(newText, {
+    await ctx.editMessageText(data.header + data.shortHtml, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
@@ -829,6 +781,7 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка при сворачивании комментария.');
   }
 });
+
 
 
 
