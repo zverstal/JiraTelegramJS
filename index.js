@@ -616,71 +616,68 @@ function getHumanReadableName(jiraName, displayName, source) {
  * Создатель задачи, Логин создателя и Статус.
  */
 function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
-  const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
-  
-  const assigneeObj = issue.fields.assignee || null;
-  let assigneeText = 'Никто';
-  if (assigneeObj) {
-    assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
-  }
-  const assigneeLogin = assigneeObj ? assigneeObj.name : 'Не указан';
-  
-  const commentAuthorObj = lastComment.author || { name: authorName, displayName: authorName };
-  const displayCommentAuthor = getHumanReadableName(
-    commentAuthorObj.name,
-    commentAuthorObj.displayName || commentAuthorObj.name,
-    source
-  );
-  
-  const reporterObj = issue.fields.reporter || issue.fields.creator || null;
-  let reporterText = 'Не указан';
-  let reporterLogin = 'Не указан';
-  if (reporterObj) {
-    reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
-    reporterLogin = reporterObj.name;
-  }
-  
-  
-  const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
-  const MAX_LEN = 300;
-  const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
-  if (fullCommentHtml.length > MAX_LEN) {
-    keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
-  }
-  
-  const prefix = isOurComment
-    ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
-    : 'В задаче появился новый комментарий:\n\n';
-  
+    const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
+    
+    const assigneeObj = issue.fields.assignee || null;
+    let assigneeText = 'Никто';
+    if (assigneeObj) {
+      assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
+    }
+    
+    const reporterObj = issue.fields.reporter || issue.fields.creator || null;
+    let reporterText = 'Не указан';
+    let reporterLogin = 'Не указан';
+    if (reporterObj) {
+      reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
+      reporterLogin = reporterObj.name;
+    }
+    
+    // **Надо добавить следующие строки:**
+    const priority = issue.fields.priority?.name || 'Не указан';
+    const taskType = issue.fields.issuetype?.name || 'Не указан';
+    const summary = issue.fields.summary || 'Без названия';
+    const statusName = issue.fields.status?.name || 'Не указан';
+    
+    const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
+    const MAX_LEN = 300;
+    const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
+    if (fullCommentHtml.length > MAX_LEN) {
+      keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
+    }
+    
+    const prefix = isOurComment
+      ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
+      : 'В задаче появился новый комментарий:\n\n';
+    
     const header =
-    `<b>Задача:</b> ${combinedId}\n` +
-    `<b>Источник:</b> ${source}\n` +
-    `<b>Приоритет:</b> ${getPriorityEmoji(priority)}\n` +
-    `<b>Тип задачи:</b> ${escapeHtml(taskType)}\n` +
-    `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
-    `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
-    `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
-    `<b>Статус:</b> ${escapeHtml(statusName)}\n` +
-    `<b>Описание:</b>\n`;
+      `<b>Задача:</b> ${combinedId}\n` +
+      `<b>Источник:</b> ${source}\n` +
+      `<b>Приоритет:</b> ${getPriorityEmoji(priority)}\n` +
+      `<b>Тип задачи:</b> ${escapeHtml(taskType)}\n` +
+      `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+      `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
+      `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
+      `<b>Статус:</b> ${escapeHtml(statusName)}\n` +
+      `<b>Комментарий:</b>\n`;
+    
+    const cacheKey = `${combinedId}:${lastComment.id}`;
+    commentCache[cacheKey] = {
+      header: prefix + header,
+      shortHtml: shortCommentHtml,
+      fullHtml: fullCommentHtml,
+      source: source
+    };
+    
+    let finalText = commentCache[cacheKey].header + shortCommentHtml;
+    finalText = finalText.replace(/<span>/gi, '<tg-spoiler>').replace(/<\/span>/gi, '</tg-spoiler>');
+    console.log('[DEBUG] Final message text to send:', finalText);
+    
+    sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
+      reply_markup: keyboard,
+      parse_mode: 'HTML'
+    }).catch(e => console.error('Error sending message to Telegram:', e));
+  }
   
-  
-  const cacheKey = `${combinedId}:${lastComment.id}`;
-  commentCache[cacheKey] = {
-    header: prefix + header,
-    shortHtml: shortCommentHtml,
-    fullHtml: fullCommentHtml,
-    source: source
-  };
-  
-  let finalText = commentCache[cacheKey].header + shortCommentHtml;
-  finalText = finalText.replace(/<span>/gi, '<tg-spoiler>').replace(/<\/span>/gi, '</tg-spoiler>');
-  console.log('[DEBUG] Final message text to send:', finalText);
-  
-  sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
-    reply_markup: keyboard,
-    parse_mode: 'HTML'
-  }).catch(e => console.error('Error sending message to Telegram:', e));
-}
 
 // ----------------------------------------------------------------------------------
 // Callback для разворачивания/сворачивания комментария по кнопкам "Развернуть"/"Свернуть"
