@@ -1173,30 +1173,78 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const combinedId = ctx.match[1];
     const telegramUsername = ctx.from.username;
+
+    // Получаем задачу из БД
     db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], async (err, task) => {
       if (err) {
         console.error('Ошибка при получении задачи:', err);
         return ctx.reply('Произошла ошибка при получении задачи.');
       }
       if (!task) return ctx.reply('Задача не найдена в БД.');
-      if (task.department !== "Техническая поддержка") return ctx.reply('Эта задача не для ТП; нельзя взять в работу через бота.');
+      if (task.department !== "Техническая поддержка") {
+        return ctx.reply('Эта задача не для ТП; нельзя взять в работу через бота.');
+      }
+
+      // Обновляем статус задачи в Jira
       let success = false;
       try {
         success = await updateJiraTaskStatus(task.source, combinedId, telegramUsername);
       } catch (errUpd) {
         console.error('Ошибка updateJiraTaskStatus:', errUpd);
       }
+
       if (success) {
-        db.run(`INSERT INTO user_actions (username, taskId, action, timestamp)
+        // Сохраняем действие пользователя в БД
+        db.run(
+          `INSERT INTO user_actions (username, taskId, action, timestamp)
            VALUES (?, ?, ?, ?)`,
           [telegramUsername, combinedId, 'take_task', getMoscowTimestamp()]
         );
         const displayName = usernameMappings[telegramUsername] || telegramUsername;
         await ctx.reply(`OK, задачу ${combinedId} взял в работу: ${displayName}.`);
+
+        // Получаем обновлённые данные задачи из Jira
+        const updatedIssue = await getJiraTaskDetails(task.source, combinedId);
+        if (!updatedIssue) {
+          console.error('Не удалось получить обновленные данные из Jira.');
+          return;
+        }
+
+        // Формируем новый текст сообщения с актуальными данными
+        const newMessageText =
+          `Задача: ${combinedId}\n` +
+          `Источник: ${task.source}\n` +
+          `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
+          `Описание: ${updatedIssue.fields.summary || task.title}\n` +
+          `Приоритет: ${getPriorityEmoji(updatedIssue.fields.priority?.name || task.priority)}\n` +
+          `Тип задачи: ${updatedIssue.fields.issuetype?.name || task.issueType}\n` +
+          `Исполнитель: ${updatedIssue.fields.assignee ? getHumanReadableName(
+              updatedIssue.fields.assignee.name,
+              updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
+              task.source
+            ) : 'Никто'}\n` +
+          `Создатель задачи: ${task.reporter}\n` +
+          `Статус: ${updatedIssue.fields.status?.name || task.status}`;
+
+        // Если в кэше есть message_id, редактируем исходное сообщение
+        const messageId = messageIdCache[combinedId];
+        if (messageId) {
+          await bot.api.editMessageText(
+            process.env.ADMIN_CHAT_ID,
+            messageId,
+            undefined,
+            newMessageText,
+            { parse_mode: 'HTML' }
+          );
+        }
+
+        // Дополнительно: через 30 секунд вызываем перенос задачи (если необходимо)
         setTimeout(async () => {
           const realKey = extractRealJiraKey(combinedId);
           const reassignOk = await reassignIssueToRealUser(task.source, realKey, telegramUsername);
-          if (reassignOk) console.log(`Задача ${combinedId} (реально) переназначена на ${telegramUsername}`);
+          if (reassignOk) {
+            console.log(`Задача ${combinedId} (реально) переназначена на ${telegramUsername}`);
+          }
         }, 30000);
       } else {
         await ctx.reply(`Не удалось перевести задачу ${combinedId} в нужный статус (updateJiraTaskStatus failed)`);
@@ -1207,6 +1255,7 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     await ctx.reply('Произошла ошибка.');
   }
 });
+
 
 async function updateJiraTaskStatus(source, combinedId, telegramUsername) {
   try {
