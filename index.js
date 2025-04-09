@@ -926,11 +926,11 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery('🔄 Обновляем данные задачи...');
     const combinedId = ctx.match[1];
 
-    let rowFromDb = await new Promise(resolve => {
+    let task = await new Promise(resolve => {
       db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
     });
 
-    let source = rowFromDb?.source;
+    let source = task?.source;
     if (!source) {
       const txt = ctx.callbackQuery.message?.text || "";
       const match = txt.match(/Источник:\s*([^\n]+)/i);
@@ -939,35 +939,39 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
 
     const updatedIssue = await getJiraTaskDetails(source, combinedId);
     if (!updatedIssue) {
-      return ctx.reply('Не удалось получить данные задачи из Jira.');
+      return ctx.reply('Не удалось получить данные из Jira.');
     }
 
     const updatedText =
       `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
       `<b>Источник:</b> ${escapeHtml(source)}\n` +
       `<b>Ссылка:</b> <a href="${escapeHtml(getTaskUrl(source, combinedId))}">Открыть в Jira</a>\n` +
-      `<b>Описание:</b> ${escapeHtml(updatedIssue.fields.summary || 'Без названия')}\n` +
-      `<b>Приоритет:</b> ${getPriorityEmoji(updatedIssue.fields.priority?.name)}\n` +
-      `<b>Тип задачи:</b> ${escapeHtml(updatedIssue.fields.issuetype?.name)}\n` +
-      `<b>Исполнитель:</b> ${updatedIssue.fields.assignee 
-        ? escapeHtml(getHumanReadableName(
-            updatedIssue.fields.assignee.name,
-            updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
-            source
-          ))
-        : 'Никто'}\n` +
-      `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(
-          updatedIssue.fields.reporter?.name || updatedIssue.fields.creator?.name,
-          updatedIssue.fields.reporter?.displayName || updatedIssue.fields.creator?.displayName || 'Не указан',
+      `<b>Описание:</b> ${escapeHtml(updatedIssue.fields.summary || task?.title || '—')}\n` +
+      `<b>Приоритет:</b> ${getPriorityEmoji(updatedIssue.fields.priority?.name || task?.priority || '—')}\n` +
+      `<b>Тип задачи:</b> ${escapeHtml(updatedIssue.fields.issuetype?.name || task?.issueType || '—')}\n` +
+      `<b>Исполнитель:</b> ${
+        updatedIssue.fields.assignee
+          ? escapeHtml(getHumanReadableName(
+              updatedIssue.fields.assignee.name,
+              updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
+              source
+            ))
+          : 'Никто'}\n` +
+      `<b>Создатель задачи:</b> ${
+        escapeHtml(getHumanReadableName(
+          task?.reporterLogin || updatedIssue.fields.reporter?.name,
+          task?.reporter || updatedIssue.fields.reporter?.displayName || '—',
           source
-      ))}\n` +
-      `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || '—')}`;
+        ))}\n` +
+      `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || task?.status || '—')}`;
 
     const keyboard = new InlineKeyboard()
       .text('🔄 Обновить данные', `refresh_task:${combinedId}`)
       .url('Открыть в Jira', getTaskUrl(source, combinedId));
 
-    await ctx.editMessageText(updatedText, {
+    const finalText = updatedText + '\u2063'; // невидимый символ
+
+    await ctx.editMessageText(finalText, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
@@ -976,6 +980,7 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка обновления задачи.');
   }
 });
+
 
 
 
