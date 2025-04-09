@@ -280,62 +280,92 @@ async function getScheduleForDate(dt) {
 // 4) Получение дежурного специалиста из Wiki
 // ----------------------------------------------------------------------------------
 async function fetchDutyEngineer() {
-  try {
-    const pageId = '3539406';
-    const token = process.env.CONFLUENCE_API_TOKEN;
-    const resp = await axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
-      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
-    });
-    let html = resp.data?.body?.view?.value;
-    if (!html) {
-      console.log('Не удалось получить HTML из body.view.value');
-      return 'Не найдено';
+    try {
+        const pageId = '3539406'; // ID страницы, где лежит таблица
+        const token = process.env.CONFLUENCE_API_TOKEN;
+
+        // Забираем HTML
+        const resp = await axios.get(`https://wiki.sxl.team/rest/api/content/${pageId}?expand=body.view`, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/json'
+            }
+        });
+
+        let html = resp.data?.body?.view?.value;
+        if (!html) {
+            console.log('Не удалось получить HTML из body.view.value');
+            return 'Не найдено';
+        }
+
+        // Чтобы игнорировать расписание 2024 года, обрезаем HTML до слова "2024"
+        const marker = '<span class="expand-control-text conf-macro-render">2024</span>';
+        const markerIndex = html.indexOf(marker);
+        if (markerIndex !== -1) {
+            html = html.slice(0, markerIndex);
+        }
+
+        // Теперь парсим строки вида:
+        // <tr><td>1</td><td>02.01-08.01</td><td>Иванов И.И.</td></tr>
+        // И т.д.
+
+        const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
+        const schedule = [];
+        let match;
+        while ((match = rowRegex.exec(html)) !== null) {
+            schedule.push({
+                index: match[1],      // "1"
+                range: match[2],     // "02.01-08.01"
+                name: match[3].trim() // "Иванов И.И."
+            });
+        }
+
+        if (schedule.length === 0) {
+            console.log('Не удалось извлечь расписание дежурств из HTML');
+            return 'Не найдено';
+        }
+
+        // Текущее время (Москва)
+        const now = DateTime.now().setZone('Europe/Moscow');
+
+        // Начало текущей недели (понедельник) и конец
+        const startOfWeek = now.startOf('week'); // Luxon по умолчанию: startOf('week') = Понедельник
+        const endOfWeek = startOfWeek.plus({ days: 6 });
+        const currentYear = startOfWeek.year;
+
+        // Проверяем, какой пункт schedule совпадает с этой неделей
+        for (const item of schedule) {
+            const [startStr, endStr] = item.range.split('-');
+            const [startDay, startMonth] = startStr.split('.');
+            const [endDay, endMonth] = endStr.split('.');
+
+            const scheduleStart = DateTime.fromObject({
+                year: currentYear,
+                month: parseInt(startMonth, 10),
+                day: parseInt(startDay, 10)
+            });
+            const scheduleEnd = DateTime.fromObject({
+                year: currentYear,
+                month: parseInt(endMonth, 10),
+                day: parseInt(endDay, 10)
+            });
+
+            // Сравниваем
+            if (
+                scheduleStart.hasSame(startOfWeek, 'day') &&
+                scheduleStart.hasSame(startOfWeek, 'month') &&
+                scheduleEnd.hasSame(endOfWeek, 'day') &&
+                scheduleEnd.hasSame(endOfWeek, 'month')
+            ) {
+                return item.name;
+            }
+        }
+
+        return 'Не найдено';
+    } catch (error) {
+        console.error('Ошибка при запросе к Confluence (дежурный):', error);
+        return 'Не найдено';
     }
-    const marker = '<span class="expand-control-text conf-macro-render">2024</span>';
-    const markerIndex = html.indexOf(marker);
-    if (markerIndex !== -1) html = html.slice(0, markerIndex);
-    const rowRegex = /<(?:tr|TR)[^>]*>\s*<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(\d{2}\.\d{2}-\d{2}\.\d{2})<\/td>\s*<td[^>]*>([^<]+)<\/td>/g;
-    const schedule = [];
-    let match;
-    while ((match = rowRegex.exec(html)) !== null) {
-      schedule.push({ index: match[1], range: match[2], name: match[3].trim() });
-    }
-    if (schedule.length === 0) {
-      console.log('Не удалось извлечь расписание дежурств из HTML');
-      return 'Не найдено';
-    }
-    const now = DateTime.now().setZone('Europe/Moscow');
-    const startOfWeek = now.startOf('week');
-    const endOfWeek = startOfWeek.plus({ days: 6 });
-    const currentYear = startOfWeek.year;
-    for (const item of schedule) {
-      const [startStr, endStr] = item.range.split('-');
-      const [startDay, startMonth] = startStr.split('.');
-      const [endDay, endMonth] = endStr.split('.');
-      const scheduleStart = DateTime.fromObject({
-        year: currentYear,
-        month: parseInt(startMonth, 10),
-        day: parseInt(startDay, 10)
-      });
-      const scheduleEnd = DateTime.fromObject({
-        year: currentYear,
-        month: parseInt(endMonth, 10),
-        day: parseInt(endDay, 10)
-      });
-      if (
-        scheduleStart.hasSame(startOfWeek, 'day') &&
-        scheduleStart.hasSame(startOfWeek, 'month') &&
-        scheduleEnd.hasSame(endOfWeek, 'day') &&
-        scheduleEnd.hasSame(endOfWeek, 'month')
-      ) {
-        return item.name;
-      }
-    }
-    return 'Не найдено';
-  } catch (error) {
-    console.error('Ошибка при запросе к Confluence (дежурный):', error);
-    return 'Не найдено';
-  }
 }
 
 // ----------------------------------------------------------------------------------
