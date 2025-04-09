@@ -1261,19 +1261,13 @@ function escapeHtml(text) {
 
   function getHumanReadableName(jiraName, displayName, source) {
     const normalizedJiraName = jiraName.trim().toLowerCase();
-    // Если в jiraName есть точка – считаем, что это логин, и пытаемся найти его в маппинге
-    if (normalizedJiraName.includes('.')) {
-      for (const [telegramUser, mapObj] of Object.entries(jiraUserMappings)) {
+    for (const [telegramUser, mapObj] of Object.entries(jiraUserMappings)) {
         if ((mapObj[source] || "").trim().toLowerCase() === normalizedJiraName) {
-          // Если найдено соответствие, возвращаем ФИО из usernameMappings (если есть), иначе displayName
-          return usernameMappings[telegramUser] || displayName;
+            return usernameMappings[telegramUser] || displayName;
         }
-      }
     }
-    // Если точка отсутствует – возвращаем displayName как есть
     return displayName;
-  }
-  
+}
 
 
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
