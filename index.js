@@ -1198,7 +1198,6 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
       }
 
       if (success) {
-        // Сохраняем действие пользователя в БД
         db.run(
           `INSERT INTO user_actions (username, taskId, action, timestamp)
            VALUES (?, ?, ?, ?)`,
@@ -1213,7 +1212,8 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
           console.error('Не удалось получить обновленные данные из Jira.');
           return;
         }
-        // Формируем новый текст сообщения с использованием escapeHtml
+        // Формируем новый текст сообщения с использованием escapeHtml для динамических данных,
+        // а также вызываем getHumanReadableName для отображения создателя задачи.
         const newMessageText =
           `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
           `<b>Источник:</b> ${escapeHtml(task.source)}\n` +
@@ -1228,18 +1228,14 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
                    task.source
                  ))
              : 'Никто'}\n` +
-          `<b>Создатель задачи:</b> ${escapeHtml(task.reporter)}\n` +
+          `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(task.reporter, task.reporter, task.source))}\n` +
           `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || task.status)}`;
 
-        // Если у нас сохранён message_id исходного сообщения, редактируем его
+        // Если в кэше есть message_id исходного сообщения, редактируем его
         const messageId = messageIdCache[combinedId];
         if (messageId) {
           try {
-            // Исправляем вызов: убираем передачу undefined и передаем параметры как (chat_id, message_id, text, extra)
-            await bot.api.editMessageText(process.env.ADMIN_CHAT_ID, messageId, {
-              text: newMessageText,
-              parse_mode: 'HTML',
-            });
+            await bot.api.editMessageText(process.env.ADMIN_CHAT_ID, messageId, newMessageText, { parse_mode: 'HTML' });
           } catch (errEdit) {
             console.error('Ошибка при редактировании сообщения:', errEdit);
           }
@@ -1262,6 +1258,7 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     await ctx.reply('Произошла ошибка.');
   }
 });
+
 
 
 async function updateJiraTaskStatus(source, combinedId, telegramUsername) {
