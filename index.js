@@ -791,67 +791,64 @@ const commentCache = {};
  * Отправляет уведомление о новом комментарии.
  */
 function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
-  // Кнопка "Перейти к задаче"
-  const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
-
-  // Преобразуем имя автора через маппинг
-  let displayAuthor = authorName;
-  const mappedAuthor = getHumanReadableName(authorName, source);
-  if (mappedAuthor) {
-    displayAuthor = mappedAuthor;
+    const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
+  
+    // Преобразуем имя автора через маппинг
+    let displayAuthor = authorName;
+    const mappedAuthor = getHumanReadableName(authorName, source);
+    if (mappedAuthor) {
+      displayAuthor = mappedAuthor;
+    }
+  
+    // Получаем HTML комментария через парсер
+    const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
+    
+    // Обрезаем комментарий корректно, чтобы не обрезать тег посередине.
+    const MAX_LEN = 300; // пороговая длина в символах
+    let shortCommentHtml = truncateHtml(fullCommentHtml, MAX_LEN);
+  
+    // Если текст был обрезан, добавляем кнопку "Развернуть"
+    if (fullCommentHtml.length > MAX_LEN) {
+      keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
+    }
+  
+    // Выбираем префикс для комментария от техподдержки, если нужно
+    const prefix = isOurComment
+      ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
+      : 'В задаче появился новый комментарий:\n\n';
+  
+    // Формируем «заголовок» уведомления (до блока "Комментарий:")
+    const header =
+      `<b>Задача:</b> ${combinedId}\n` +
+      `<b>Источник:</b> ${source}\n` +
+      `<b>Отдел:</b> ${department}\n` +
+      `<b>Ссылка:</b> ${getTaskUrl(source, combinedId)}\n` +
+      `<b>Описание:</b> ${escapeHtml(issue.fields.summary || '')}\n` +
+      `<b>Приоритет:</b> ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
+      `<b>Тип задачи:</b> ${escapeHtml(issue.fields.issuetype?.name || 'Не указан')}\n` +
+      `<b>Исполнитель:</b> ${escapeHtml(issue.fields.assignee?.displayName || 'Не указан')}\n` +
+      `<b>Автор комментария:</b> ${escapeHtml(displayAuthor)}\n` +
+      `<b>Комментарий:</b>\n`;
+  
+    // Сохраняем в кэше header, оба варианта комментария и source для callback'ов
+    const cacheKey = `${combinedId}:${lastComment.id}`;
+    commentCache[cacheKey] = {
+      header: prefix + header,
+      shortHtml: shortCommentHtml,
+      fullHtml: fullCommentHtml,
+      source: source
+    };
+  
+    const finalText = commentCache[cacheKey].header + shortCommentHtml;
+  
+    console.log('[DEBUG] Final message text to send:', finalText);
+  
+    sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
+      reply_markup: keyboard,
+      parse_mode: 'HTML'
+    }).catch(e => console.error('Error sending message to Telegram:', e));
   }
-
-  // Получаем HTML комментария через парсер
-  const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
   
-  // Если комментарий слишком длинный, обрезаем его
-  const MAX_LEN = 300; // пороговая длина в символах
-  let shortCommentHtml = fullCommentHtml;
-  let isTruncated = false;
-  if (fullCommentHtml.length > MAX_LEN) {
-    shortCommentHtml = fullCommentHtml.slice(0, MAX_LEN) + '...';
-    isTruncated = true;
-    // Добавляем кнопку "Развернуть"
-    keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
-  }
-  
-  // Префикс для комментария (с указанием, что комментарий от техподдержки, если isOurComment true)
-  const prefix = isOurComment
-    ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
-    : 'В задаче появился новый комментарий:\n\n';
-  
-  // Формируем «заголовок» уведомления (до блока "Комментарий:")
-  const header =
-    `<b>Задача:</b> ${combinedId}\n` +
-    `<b>Источник:</b> ${source}\n` +
-    `<b>Отдел:</b> ${department}\n` +
-    `<b>Ссылка:</b> ${getTaskUrl(source, combinedId)}\n` +
-    `<b>Описание:</b> ${escapeHtml(issue.fields.summary || '')}\n` +
-    `<b>Приоритет:</b> ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
-    `<b>Тип задачи:</b> ${escapeHtml(issue.fields.issuetype?.name || 'Не указан')}\n` +
-    `<b>Исполнитель:</b> ${escapeHtml(issue.fields.assignee?.displayName || 'Не указан')}\n` +
-    `<b>Автор комментария:</b> ${escapeHtml(displayAuthor)}\n` +
-    `<b>Комментарий:</b>\n`;
-
-  // Сохраняем в кэше header, оба варианта комментария и source
-  const cacheKey = `${combinedId}:${lastComment.id}`;
-  commentCache[cacheKey] = {
-    header: prefix + header, // добавляем префикс к заголовку
-    shortHtml: shortCommentHtml,
-    fullHtml: fullCommentHtml,
-    source: source
-  };
-
-  const finalText = commentCache[cacheKey].header + shortCommentHtml;
-
-  // (Опционально: выведите finalText в лог для отладки)
-  console.log('[DEBUG] Final message text to send:', finalText);
-
-  sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
-    reply_markup: keyboard,
-    parse_mode: 'HTML'
-  }).catch(e => console.error('Error sending message to Telegram:', e));
-}
 
 
 // Callback для разворачивания комментария
@@ -1112,6 +1109,23 @@ function escapeHtml(text) {
       return `<a href="${safeUrl}">${safeText}</a>`;
     });
   }
+
+  function truncateHtml(html, maxLength) {
+    if (html.length <= maxLength) return html;
+    
+    // Пытаемся найти последний закрывающий тег </a> до maxLength
+    const closeTag = "</a>";
+    const lastCloseIdx = html.lastIndexOf(closeTag, maxLength);
+    
+    if (lastCloseIdx !== -1) {
+      // Обрезаем так, чтобы тег </a> был завершён
+      return html.slice(0, lastCloseIdx + closeTag.length) + '...';
+    }
+    
+    // Если нет закрывающего тега, возвращаем обычное обрезание
+    return html.slice(0, maxLength) + '...';
+  }
+  
   
   /**
    * Преобразует строки, начинающиеся с "# ", в нумерованный список:
