@@ -960,49 +960,141 @@ async function updateJiraTaskStatus(source, combinedId, telegramUsername) {
 // 8) КНОПКА "Подробнее" (toggle_description)
 // ----------------------------------------------------------------------------------
 
+// 1. Вспомогательные функции
+
 function escapeHtml(text) {
     if (!text) return '';
     return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-}
-
-function formatTables(text) {
-    return text.replace(/\|(.+?)\|/g, match => `<pre>${match.trim()}</pre>`);
-}
-
-function convertCodeBlocks(text) {
-    return text
-        .replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (m, lang, code) => {
-            return `<pre><code class="language-${lang}">${escapeHtml(code.trim())}</code></pre>`;
-        })
-        .replace(/\{code\}([\s\S]*?)\{code\}/g, (m, code) => {
-            return `<pre><code>${escapeHtml(code.trim())}</code></pre>`;
-        });
-}
-
-function parseCustomMarkdown(text) {
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+  
+  /**
+   * Преобразует блоки:
+   *   {code:java}...{code}
+   *   {code}...{code}
+   * в <pre><code class="language-...">...</code></pre>.
+   */
+  function convertCodeBlocks(input) {
+    let output = input;
+    // 1) {code:lang} ... {code}
+    output = output.replace(/\{code:([\w\-]+)\}([\s\S]*?)\{code\}/g, (match, lang, code) => {
+      return `<pre><code class="language-${lang}">${escapeHtml(code.trim())}</code></pre>`;
+    });
+  
+    // 2) {code} ... {code}
+    output = output.replace(/\{code\}([\s\S]*?)\{code\}/g, (match, code) => {
+      return `<pre><code>${escapeHtml(code.trim())}</code></pre>`;
+    });
+    return output;
+  }
+  
+  /**
+   * Преобразует {noformat}...{noformat} → <pre>...</pre>.
+   */
+  function convertNoformatBlocks(text) {
+    return text.replace(/\{noformat\}([\s\S]*?)\{noformat\}/g, (match, content) => {
+      return `<pre>${escapeHtml(content.trim())}</pre>`;
+    });
+  }
+  
+  /**
+   * Ищет [Link Text|URL] и превращает в <a href="URL">Link Text</a>.
+   */
+  function convertSquareBracketLinks(text) {
+    // Пример: [View alert rule|https://example.com]
+    return text.replace(/\[([^\|\]]+)\|([^\]]+)\]/g, (match, linkText, linkUrl) => {
+      const safeText = escapeHtml(linkText);
+      const safeUrl = escapeHtml(linkUrl);
+      return `<a href="${safeUrl}">${safeText}</a>`;
+    });
+  }
+  
+  /**
+   * Преобразует строки, начинающиеся с "# ", в нумерованный список:
+   * # item => "1) item", # another => "2) another", и т.д.
+   */
+  function convertHashLinesToNumbered(text) {
+    let counter = 1;
+    const lines = text.split('\n');
+    const result = lines.map(line => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('# ')) {
+        const content = trimmed.slice(2); // убираем "# "
+        return `${counter++}) ${content}`;
+      }
+      return line;
+    });
+    return result.join('\n');
+  }
+  
+  /**
+   * Преобразует "|col1|col2|" в <pre>|col1|col2|</pre>.
+   * (Простейший вариант, если нужны более сложные таблицы, дописываем.)
+   */
+  function formatTables(text) {
+    return text.replace(/\|(.+?)\|/g, match => {
+      return `<pre>${escapeHtml(match.trim())}</pre>`;
+    });
+  }
+  
+  // 2. Основная функция "parseCustomMarkdown"
+  // -----------------------------------------
+  function parseCustomMarkdown(text) {
     if (!text) return '';
-
+  
+    // 1) {noformat}...{noformat}
+    text = convertNoformatBlocks(text);
+  
+    // 2) {code}, {code:lang}
     text = convertCodeBlocks(text);
+  
+    // 3) "таблицы" |...|
     text = formatTables(text);
-
-    return text
-        .replace(/\*(.*?)\*/g, '<b>$1</b>')
-        .replace(/_(.*?)_/g, '<i>$1</i>')
-        .replace(/\+(.*?)\+/g, '<u>$1</u>')
-        .replace(/~~(.*?)~~/g, '<s>$1</s>')
-        .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3')
-        .replace(/^\-\s(.*)/gm, '• $1')
-        .replace(/^\*\s(.*)/gm, '• $1')
-        .replace(/^\d+\.\s(.*)/gm, '🔹 $1')
-        .replace(/\n{3,}/g, '\n\n');
-}
-
-function formatDescriptionAsHtml(rawDescription) {
+  
+    // 4) [Text|URL]
+    text = convertSquareBracketLinks(text);
+  
+    // 5) # lines => numbered
+    text = convertHashLinesToNumbered(text);
+  
+    // 6) Markdown-like преобразования (*bold*, _italics_, +underline+, ~~strike~~, `inline code`)
+    text = text
+      // жирный
+      .replace(/\*(.*?)\*/g, '<b>$1</b>')
+      // курсив
+      .replace(/_(.*?)_/g, '<i>$1</i>')
+      // подчёркнутый
+      .replace(/\+(.*?)\+/g, '<u>$1</u>')
+      // зачёркнутый
+      .replace(/~~(.*?)~~/g, '<s>$1</s>')
+      // inline code: `...`
+      .replace(/(^|\s)`([^`]+)`(\s|$)/g, '$1<code>$2</code>$3')
+      // списки "- " и "* "
+      .replace(/^\-\s(.*)/gm, '• $1')
+      .replace(/^\*\s(.*)/gm, '• $1')
+      // нумерованный 1. => "🔹 "
+      .replace(/^\d+\.\s(.*)/gm, '🔹 $1')
+      // Удаляем избыточные переносы (3+ подряд -> 2)
+      .replace(/\n{3,}/g, '\n\n');
+  
+    return text;
+  }
+  
+  /**
+   * 3. Ваш "formatDescriptionAsHtml" просто вызывает parseCustomMarkdown
+   */
+  function formatDescriptionAsHtml(rawDescription) {
     return parseCustomMarkdown(rawDescription || '');
-}
+  }
+  
+  // ---------------------------------------------------------------------------
+  // Пример использования
+  // ---------------------------------------------------------------------------
+  // const originalText = `# Hello world\n{code:java}\nSystem.out.println("Hi");\n{code}\n[Click|http://google.com]`;
+  // const html = parseCustomMarkdown(originalText);
+  // bot.api.sendMessage(chatId, html, { parse_mode: "HTML" });
 
 
 function getHumanReadableName(jiraName, source) {
