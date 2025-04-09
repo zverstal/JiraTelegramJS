@@ -535,7 +535,7 @@ async function checkForNewComments() {
       do {
         const response = await axios.get(url, {
           headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/json' },
-          params: { jql, maxResults: 50, startAt, fields: 'comment,assignee,summary,priority,issuetype,customfield_10500,customfield_10504' }
+          params: { jql, maxResults: 50, startAt, fields: 'comment,assignee,status,reporter,creator,summary,priority,issuetype,customfield_10500,customfield_10504'}
         });
         total = response.data.total;
         const issues = response.data.issues;
@@ -623,6 +623,7 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
     if (assigneeObj) {
       assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
     }
+    
     
     const reporterObj = issue.fields.reporter || issue.fields.creator || null;
     let reporterText = 'Не указан';
