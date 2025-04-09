@@ -655,18 +655,13 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
     const header =
     `<b>Задача:</b> ${combinedId}\n` +
     `<b>Источник:</b> ${source}\n` +
-    `<b>Отдел:</b> ${department}\n` +
-    `<b>Ссылка:</b> ${getTaskUrl(source, combinedId)}\n` +
-    `<b>Описание:</b> ${escapeHtml(issue.fields.summary || '')}\n` +
-    `<b>Приоритет:</b> ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
-    `<b>Тип задачи:</b> ${escapeHtml(issue.fields.issuetype?.name || 'Не указан')}\n` +
+    `<b>Приоритет:</b> ${getPriorityEmoji(priority)}\n` +
+    `<b>Тип задачи:</b> ${escapeHtml(taskType)}\n` +
+    `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
     `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
-    //`<b>Логин исполнителя:</b> ${escapeHtml(assigneeLogin)}\n` +
     `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
-    //`<b>Логин создателя:</b> ${escapeHtml(reporterLogin)}\n` +
-    `<b>Статус:</b> ${escapeHtml(issue.fields.status?.name || 'Не указан')}\n` +
-    `<b>Автор комментария:</b> ${escapeHtml(displayCommentAuthor)}\n` +
-    `<b>Комментарий:</b>\n`;
+    `<b>Статус:</b> ${escapeHtml(statusName)}\n` +
+    `<b>Описание:</b>\n`;
   
   
   const cacheKey = `${combinedId}:${lastComment.id}`;
