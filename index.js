@@ -27,14 +27,6 @@ function getMoscowDateTime() {
 }
 
 
-db.serialize(() => {
-db.run(`ALTER TABLE tasks ADD COLUMN reporter TEXT`);
-db.run(`ALTER TABLE tasks ADD COLUMN reporterLogin TEXT`);
-db.run(`ALTER TABLE tasks ADD COLUMN assignee TEXT`);
-db.run(`ALTER TABLE tasks ADD COLUMN assigneeLogin TEXT`);
-db.run(`ALTER TABLE tasks ADD COLUMN status TEXT`);
-});
-
 // Расширенная схема таблицы задач (добавлены: reporter, reporterLogin, assignee, assigneeLogin, status)
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS tasks (
