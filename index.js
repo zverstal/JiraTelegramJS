@@ -641,7 +641,10 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   const taskType = issue.fields.issuetype?.name || 'Не указан';
   const summary = issue.fields.summary || 'Без названия';
   const statusName = issue.fields.status?.name || 'Не указан';
-  const commentAuthor = lastComment.author?.displayName || lastComment.author?.name || authorName;
+  const commentAuthorRaw = lastComment.author?.name || authorName;
+  const commentAuthorDisplay = lastComment.author?.displayName || commentAuthorRaw;
+  const commentAuthor = getHumanReadableName(commentAuthorRaw, commentAuthorDisplay, source);
+
   
   const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
   const MAX_LEN = 300;
