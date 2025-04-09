@@ -818,27 +818,33 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
     const prefix = isOurComment
       ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
       : 'В задаче появился новый комментарий:\n\n';
-    
+
+      
+    // Получаем значение для исполнителя с учётом displayName
+    const performer = assigneeObj
+    ? getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source)
+    : 'Не указан';
+
     // Формируем заголовок уведомления
     const header =
-      `<b>Задача:</b> ${combinedId}\n` +
-      `<b>Источник:</b> ${source}\n` +
-      `<b>Отдел:</b> ${department}\n` +
-      `<b>Ссылка:</b> ${getTaskUrl(source, combinedId)}\n` +
-      `<b>Описание:</b> ${escapeHtml(issue.fields.summary || '')}\n` +
-      `<b>Приоритет:</b> ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
-      `<b>Тип задачи:</b> ${escapeHtml(issue.fields.issuetype?.name || 'Не указан')}\n` +
-      `<b>Исполнитель:</b> ${escapeHtml(issue.fields.assignee?.displayName || 'Не указан')}\n` +
-      `<b>Автор комментария:</b> ${escapeHtml(displayAuthor)}\n` +
-      `<b>Комментарий:</b>\n`;
-    
+    `<b>Задача:</b> ${combinedId}\n` +
+    `<b>Источник:</b> ${source}\n` +
+    `<b>Отдел:</b> ${department}\n` +
+    `<b>Ссылка:</b> ${getTaskUrl(source, combinedId)}\n` +
+    `<b>Описание:</b> ${escapeHtml(issue.fields.summary || '')}\n` +
+    `<b>Приоритет:</b> ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
+    `<b>Тип задачи:</b> ${escapeHtml(issue.fields.issuetype?.name || 'Не указан')}\n` +
+    `<b>Исполнитель:</b> ${escapeHtml(performer)}\n` +
+    `<b>Автор комментария:</b> ${escapeHtml(displayAuthor)}\n` +
+    `<b>Комментарий:</b>\n`;
+
     // Сохраняем в кэше заголовок, варианты комментария и source для callback'ов
     const cacheKey = `${combinedId}:${lastComment.id}`;
     commentCache[cacheKey] = {
-      header: prefix + header,
-      shortHtml: shortCommentHtml,
-      fullHtml: fullCommentHtml,
-      source: source
+    header: prefix + header,
+    shortHtml: shortCommentHtml,
+    fullHtml: fullCommentHtml,
+    source: source
     };
     
     // Итоговый текст
@@ -1256,18 +1262,21 @@ function escapeHtml(text) {
   // bot.api.sendMessage(chatId, html, { parse_mode: "HTML" });
 
 
-  function getHumanReadableName(jiraName, source) {
-    if (!jiraName || !source) return null;
-    // Приводим значение к нижнему регистру и обрезаем пробелы
+  function getHumanReadableName(jiraName, displayName, source) {
     const normalizedJiraName = jiraName.trim().toLowerCase();
-    for (const [telegramUser, mapObj] of Object.entries(jiraUserMappings)) {
-        // Приводим также ключ для сравнения
+    // Если в jiraName есть точка – считаем, что это логин, и пытаемся найти его в маппинге
+    if (normalizedJiraName.includes('.')) {
+      for (const [telegramUser, mapObj] of Object.entries(jiraUserMappings)) {
         if ((mapObj[source] || "").trim().toLowerCase() === normalizedJiraName) {
-            return usernameMappings[telegramUser] || jiraName;
+          // Если найдено соответствие, возвращаем ФИО из usernameMappings (если есть), иначе displayName
+          return usernameMappings[telegramUser] || displayName;
         }
+      }
     }
-    return null;
-}
+    // Если точка отсутствует – возвращаем displayName как есть
+    return displayName;
+  }
+  
 
 
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
@@ -1311,17 +1320,16 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         const priorityEmoji = getPriorityEmoji(priority);
 
         // 4) Определяем исполнителя
-        let assigneeText = 'Никто';
-        if (assigneeObj) {
-            // Например, assigneeObj.name = "d.baratov"
-            const mappedName = getHumanReadableName(assigneeObj.name, source);
-            if (mappedName) {
-                assigneeText = mappedName;
-            } else {
-                // Не из нашего отдела => берём displayName
-                assigneeText = assigneeObj.displayName || assigneeObj.name;
-            }
-        }
+        // 4) Определяем исполнителя
+let assigneeText = 'Никто';
+if (assigneeObj) {
+  // Передаём оба поля: логин (assigneeObj.name) и displayName (assigneeObj.displayName)
+  const mappedName = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
+  if (mappedName) {
+    assigneeText = mappedName;
+  }
+}
+
 
         // 5) Проверяем, свернуто ли сейчас описание или развернуто
         const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
