@@ -751,26 +751,26 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
     }
 
     const newText = data.header + data.fullHtml;
-
     const keyboard = new InlineKeyboard()
       .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
       .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
 
-    // Добавляем кнопки вложений, если есть
-    (data.attachments || []).forEach(att => {
-      keyboard.row().url(att.label, att.url);
-    });
+    if (data.attachments && Array.isArray(data.attachments)) {
+      for (const att of data.attachments) {
+        keyboard.row().url(att.label, att.url);
+      }
+    }
 
     await ctx.editMessageText(newText, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
-
   } catch (err) {
     console.error('expand_comment error:', err);
     await ctx.reply('Ошибка при раскрытии комментария.');
   }
 });
+
 
 
 bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
@@ -785,26 +785,20 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
     }
 
     const newText = data.header + data.shortHtml;
-
     const keyboard = new InlineKeyboard()
       .text('Развернуть', `expand_comment:${combinedId}:${commentId}`)
       .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
-
-    // Добавляем кнопки вложений, если есть
-    (data.attachments || []).forEach(att => {
-      keyboard.row().url(att.label, att.url);
-    });
 
     await ctx.editMessageText(newText, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
-
   } catch (err) {
     console.error('collapse_comment error:', err);
     await ctx.reply('Ошибка при сворачивании комментария.');
   }
 });
+
 
 
 // ----------------------------------------------------------------------------------
