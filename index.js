@@ -636,6 +636,7 @@ bot.callbackQuery('refresh_tunnel', async (ctx) => {
 
 
 async function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
+  // Создаём базовую клавиатуру с кнопкой "Перейти к задаче"
   const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
 
   // Маппинг исполнителя
@@ -652,7 +653,7 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
   }
 
-  // Извлечение необходимых полей
+  // Извлечение остальных необходимых полей
   const priority = issue.fields.priority?.name || 'Не указан';
   const taskType = issue.fields.issuetype?.name || 'Не указан';
   const summary = issue.fields.summary || 'Без названия';
@@ -665,18 +666,18 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
 
   // Парсим комментарий (Markdown → HTML)
   let fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
-  // Если комментарий содержит синтаксис миниатюры, удаляем его
+  // Если комментарий содержит синтаксис миниатюры, удаляем его (после удаления результат может оказаться пустым)
   fullCommentHtml = fullCommentHtml.replace(/!([^!]+)\|thumbnail!/gi, '');
 
   const MAX_LEN = 300;
   const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
 
-  // Если длина комментария превышает лимит ИЛИ если есть вложения – добавляем кнопку "Развернуть"
+  // Если длина комментария больше лимита ИЛИ если есть вложения в комментарии, то добавляем кнопку "Развернуть"
   if (fullCommentHtml.length > MAX_LEN || (lastComment.attachments && lastComment.attachments.length > 0)) {
     keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
   }
 
-  // Если в комментарии есть вложения – добавляем кнопки для каждого вложения
+  // Если в комментарии есть attachments – добавляем кнопки для каждого вложения
   if (lastComment.attachments && Array.isArray(lastComment.attachments) && lastComment.attachments.length > 0) {
     let attachmentCounter = 1;
     const currentTunnelUrl = process.env.PUBLIC_BASE_URL;
@@ -733,6 +734,7 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     parse_mode: 'HTML'
   }).catch(e => console.error('Error sending message to Telegram:', e));
 }
+
 
 
 
