@@ -761,27 +761,29 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
     // Пытаемся достать из памяти
     let data = commentCache[cacheKey];
 
-    // Если нет в памяти — достаём из базы
     if (!data) {
+      const [taskId, commentId] = cacheKey.split(':');
       const row = await new Promise((resolve, reject) => {
         db.get(
-          `SELECT * FROM comment_cache WHERE cacheKey = ?`,
-          [cacheKey],
+          `SELECT * FROM comment_cache WHERE taskId = ? AND commentId = ?`,
+          [taskId, commentId],
           (err, row) => err ? reject(err) : resolve(row)
         );
       });
-
+    
       if (!row) {
         return ctx.reply('Комментарий не найден (в кеше и БД)');
       }
-
+    
       data = {
         header: row.header,
         shortHtml: row.shortHtml,
         fullHtml: row.fullHtml,
-        attachments: JSON.parse(row.attachments || '[]'),
+        attachments: JSON.parse(row.attachmentsJson || '[]'),
         source: row.source
       };
+    
+      commentCache[cacheKey] = data; // добавим в кэш для повторного использования
     }
 
     const keyboard = new InlineKeyboard()
@@ -836,10 +838,11 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
 
     // Если нет в памяти — достаём из базы
     if (!data) {
+      const [taskId, commentId] = cacheKey.split(':');
       const row = await new Promise((resolve, reject) => {
         db.get(
-          `SELECT * FROM comment_cache WHERE cacheKey = ?`,
-          [cacheKey],
+          `SELECT * FROM comment_cache WHERE taskId = ? AND commentId = ?`,
+          [taskId, commentId],
           (err, row) => err ? reject(err) : resolve(row)
         );
       });
@@ -852,9 +855,11 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
         header: row.header,
         shortHtml: row.shortHtml,
         fullHtml: row.fullHtml,
-        attachments: JSON.parse(row.attachments || '[]'),
+        attachments: JSON.parse(row.attachmentsJson || '[]'),
         source: row.source
       };
+
+      commentCache[cacheKey] = data; // сохраняем в in-memory кэш
     }
 
     const keyboard = new InlineKeyboard()
@@ -870,6 +875,7 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка при сворачивании комментария.');
   }
 });
+
 
 
 
