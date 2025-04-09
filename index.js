@@ -665,9 +665,11 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   const commentAuthor = getHumanReadableName(commentAuthorRaw, commentDisplayRaw, source);
 
   const rawCommentBody = lastComment.body || '';
-  const hasThumbnail = !!rawCommentBody.match(/!\S+?\|thumbnail!/gi);
+  const mentionedAttachments = Array.from(rawCommentBody.matchAll(/!(.+?)\|thumbnail!/gi)).map(m => m[1].trim());
 
+  // Очистка комментария от миниатюр
   let fullCommentHtml = parseCustomMarkdown(rawCommentBody).replace(/!\S+?\|thumbnail!/gi, '');
+  const hasThumbnail = mentionedAttachments.length > 0;
   const shortCommentHtml = hasThumbnail
     ? '📎 В комментарии вложение, нажми "Развернуть" для просмотра'
     : safeTruncateHtml(fullCommentHtml, 300);
@@ -688,16 +690,20 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     `<b>Статус:</b> ${escapeHtml(statusName)}\n` +
     `<b>Комментарий:</b>\n`;
 
+  const matchingAttachments = (issue.fields.attachment || []).filter(att =>
+    mentionedAttachments.includes(att.filename)
+  );
+
   const cacheKey = `${combinedId}:${lastComment.id}`;
   commentCache[cacheKey] = {
     header: prefix + header,
     shortHtml: shortCommentHtml,
     fullHtml: fullCommentHtml,
-    attachments: lastComment.attachments || [],
+    attachments: matchingAttachments,
     source: source
   };
 
-  if (hasThumbnail || fullCommentHtml.length > 300 || (lastComment.attachments || []).length > 0) {
+  if (hasThumbnail || fullCommentHtml.length > 300) {
     keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
   }
 
@@ -712,6 +718,7 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   }).catch(e => console.error('Error sending message to Telegram:', e));
 }
 
+
 bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
@@ -725,10 +732,10 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
       .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
       .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
 
-    // Добавляем вложения (если есть)
-    if (data.attachments && data.attachments.length > 0) {
+    if (data.attachments.length > 0) {
       let counter = 1;
       const tunnel = process.env.PUBLIC_BASE_URL;
+
       for (const att of data.attachments) {
         try {
           const fileResp = await axios.get(att.content, {
@@ -758,6 +765,7 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка при раскрытии комментария.');
   }
 });
+
 
 bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
   try {
