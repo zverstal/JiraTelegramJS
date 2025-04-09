@@ -1109,11 +1109,9 @@ function escapeHtml(text) {
     return text.replace(/\[([^\|\]]+)\|([^\]]+)\]/g, (match, linkText, linkUrl) => {
       const safeText = escapeHtml(linkText.trim());
       const safeUrl = escapeHtml(linkUrl.trim());
-      // Оборачиваем ссылку в <span> для обеспечения корректного HTML
-      return `<span><a href="${safeUrl}">${safeText}</a></span>`;
+      return `<a href="${safeUrl}">${safeText}</a>`;
     });
   }
-  
   
   /**
    * Преобразует строки, начинающиеся с "# ", в нумерованный список:
