@@ -865,8 +865,6 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
 
 
 
-
-
 bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
@@ -928,42 +926,50 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery('🔄 Обновляем данные задачи...');
     const combinedId = ctx.match[1];
 
-    db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], async (err, task) => {
-      if (err || !task) {
-        console.error('Ошибка получения задачи из БД:', err || 'задача не найдена');
-        return ctx.reply('Задача не найдена.');
-      }
+    let rowFromDb = await new Promise(resolve => {
+      db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
+    });
 
-      const updatedIssue = await getJiraTaskDetails(task.source, combinedId);
-      if (!updatedIssue) {
-        return ctx.reply('Не удалось получить данные из Jira.');
-      }
+    let source = rowFromDb?.source;
+    if (!source) {
+      const txt = ctx.callbackQuery.message?.text || "";
+      const match = txt.match(/Источник:\s*([^\n]+)/i);
+      source = match ? match[1].trim() : combinedId.split('-')[0];
+    }
 
-      const updatedText =
-        `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
-        `<b>Источник:</b> ${escapeHtml(task.source)}\n` +
-        `<b>Ссылка:</b> <a href="${escapeHtml(getTaskUrl(task.source, task.id))}">Открыть в Jira</a>\n` +
-        `<b>Описание:</b> ${escapeHtml(updatedIssue.fields.summary || task.title)}\n` +
-        `<b>Приоритет:</b> ${getPriorityEmoji(updatedIssue.fields.priority?.name || task.priority)}\n` +
-        `<b>Тип задачи:</b> ${escapeHtml(updatedIssue.fields.issuetype?.name || task.issueType)}\n` +
-        `<b>Исполнитель:</b> ${updatedIssue.fields.assignee 
-          ? escapeHtml(getHumanReadableName(
-              updatedIssue.fields.assignee.name,
-              updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
-              task.source
-            ))
-          : 'Никто'}\n` +
-        `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(task.reporterLogin, task.reporter, task.source))}\n` +
-        `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || task.status)}`;
+    const updatedIssue = await getJiraTaskDetails(source, combinedId);
+    if (!updatedIssue) {
+      return ctx.reply('Не удалось получить данные задачи из Jira.');
+    }
 
-      const keyboard = new InlineKeyboard()
-        .text('🔄 Обновить данные', `refresh_task:${combinedId}`)
-        .url('Открыть в Jira', getTaskUrl(task.source, task.id));
+    const updatedText =
+      `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
+      `<b>Источник:</b> ${escapeHtml(source)}\n` +
+      `<b>Ссылка:</b> <a href="${escapeHtml(getTaskUrl(source, combinedId))}">Открыть в Jira</a>\n` +
+      `<b>Описание:</b> ${escapeHtml(updatedIssue.fields.summary || 'Без названия')}\n` +
+      `<b>Приоритет:</b> ${getPriorityEmoji(updatedIssue.fields.priority?.name)}\n` +
+      `<b>Тип задачи:</b> ${escapeHtml(updatedIssue.fields.issuetype?.name)}\n` +
+      `<b>Исполнитель:</b> ${updatedIssue.fields.assignee 
+        ? escapeHtml(getHumanReadableName(
+            updatedIssue.fields.assignee.name,
+            updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
+            source
+          ))
+        : 'Никто'}\n` +
+      `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(
+          updatedIssue.fields.reporter?.name || updatedIssue.fields.creator?.name,
+          updatedIssue.fields.reporter?.displayName || updatedIssue.fields.creator?.displayName || 'Не указан',
+          source
+      ))}\n` +
+      `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || '—')}`;
 
-      await ctx.editMessageText(updatedText, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard
-      });
+    const keyboard = new InlineKeyboard()
+      .text('🔄 Обновить данные', `refresh_task:${combinedId}`)
+      .url('Открыть в Jira', getTaskUrl(source, combinedId));
+
+    await ctx.editMessageText(updatedText, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
     });
   } catch (err) {
     console.error('refresh_task error:', err);
