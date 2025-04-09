@@ -788,40 +788,36 @@ const sendMessageWithLimiter = limiter.wrap(async (chatId, text, opts) => {
 function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
     const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
 
-    // Преобразуем имя автора
     let displayAuthor = authorName;
     const mappedAuthor = getHumanReadableName(authorName, source);
     if (mappedAuthor) {
         displayAuthor = mappedAuthor;
     }
 
-// 1) Пускаем тело комментария через парсер
-const commentHtml = parseCustomMarkdown(lastComment.body || '');
+    // Парсим текст комментария
+    const commentHtml = parseCustomMarkdown(lastComment.body || '');
 
-// 2) Формируем сообщение
-const prefix = isOurComment
-    ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
-    : 'В задаче появился новый комментарий:\n\n';
+    const prefix = isOurComment
+        ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
+        : 'В задаче появился новый комментарий:\n\n';
 
-// Используем `commentHtml` прямо в тексте
-const msg =
-    prefix +
-    `Задача: ${combinedId}\n` +
-    `Источник: ${source}\n` +
-    `Отдел: ${department}\n` +
-    `Ссылка: ${getTaskUrl(source, combinedId)}\n` +
-    `Описание: ${issue.fields.summary}\n` +
-    `Приоритет: ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
-    `Тип задачи: ${issue.fields.issuetype?.name || 'Не указан'}\n` +
-    `Исполнитель: ${issue.fields.assignee?.displayName || 'Не указан'}\n` +
-    `Автор комментария: ${author}\n` +
-    `Комментарий:\n${commentHtml}`;   // <-- РАЗМЕЧЕННЫЙ HTML
+    const msg =
+        prefix +
+        `Задача: ${combinedId}\n` +
+        `Источник: ${source}\n` +
+        `Отдел: ${department}\n` +
+        `Ссылка: ${getTaskUrl(source, combinedId)}\n` +
+        `Описание: ${issue.fields.summary}\n` +
+        `Приоритет: ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
+        `Тип задачи: ${issue.fields.issuetype?.name || 'Не указан'}\n` +
+        `Исполнитель: ${issue.fields.assignee?.displayName || 'Не указан'}\n` +
+        `Автор комментария: ${displayAuthor}\n` +  // <-- вместо "author"
+        `Комментарий:\n${commentHtml}`;
 
-// 3) Отправляем в Telegram с parse_mode='HTML'
-sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, msg, {
-    reply_markup: keyboard,       // если у вас есть InlineKeyboard
-    parse_mode: 'HTML'           // ВАЖНО
-}).catch(e => console.error('Error sending message to Telegram:', e));
+    sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, msg, {
+        reply_markup: keyboard,
+        parse_mode: 'HTML'
+    }).catch(e => console.error('Error sending message to Telegram:', e));
 }
 
 
