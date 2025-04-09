@@ -999,126 +999,126 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         await ctx.answerCallbackQuery();
         const combinedId = ctx.match[1];
 
-        // Попытка взять из локальной БД
+        // Пытаемся определить источник (sxl/betone) из нашей локальной БД
+        // или fallback (берём префикс 'sxl-' / 'betone-').
         let task = await new Promise(resolve => {
             db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
         });
 
-        let source, issue;
-
-        if (task) {
-            source = task.source;
-            issue = await getJiraTaskDetails(source, combinedId);
-        } else {
-            // fallback
-            const txt = ctx.callbackQuery.message?.text || "";
-            const m = txt.match(/Источник:\s*([^\n]+)/i);
-            if (m && m[1]) {
+        let source = task?.source;
+        if (!source) {
+            // fallback: берём текст сообщения или split
+            const msgText = ctx.callbackQuery.message?.text || "";
+            const m = msgText.match(/Источник:\s*([^\n]+)/i);
+            if (m) {
                 source = m[1].trim();
             } else {
-                source = combinedId.split('-')[0];
+                // последнее fallback
+                source = combinedId.split('-')[0]; // 'sxl' или 'betone'
             }
-            issue = await getJiraTaskDetails(source, combinedId);
-        }
-        if (!issue) {
-            // Попробуем альтернативный
-            const alt = source === 'sxl' ? 'betone' : 'sxl';
-            issue = await getJiraTaskDetails(alt, combinedId);
-            if (issue) source = alt;
-        }
-        if (!issue) {
-            await ctx.reply('Не удалось загрузить данные из Jira.');
-            return;
         }
 
+        // 1) Получаем текущие данные задачи из Jira (включая assignee)
+        let issue = await getJiraTaskDetails(source, combinedId);
+        if (!issue) {
+            // Попробуем другой source, если неудачно
+            const altSource = (source === 'sxl') ? 'betone' : 'sxl';
+            issue = await getJiraTaskDetails(altSource, combinedId);
+            if (issue) {
+                source = altSource;
+            }
+        }
+        if (!issue) {
+            return ctx.reply('Не удалось загрузить данные задачи из Jira');
+        }
+
+        // Извлекаем поля
         const summary = issue.fields.summary || 'Нет заголовка';
-        const fullDescription = issue.fields.description || 'Нет описания';
+        const description = issue.fields.description || 'Нет описания';
+        const statusName = issue.fields.status?.name || '—';
         const priorityEmoji = getPriorityEmoji(issue.fields.priority?.name || 'Не указан');
         const taskType = issue.fields.issuetype?.name || 'Не указан';
-        const taskUrl = getTaskUrl(source, combinedId);
-        const taskStatus = issue.fields.status?.name;
 
-        const safeSummary = escapeHtml(summary);
-        const safeDescription = formatDescriptionAsHtml(fullDescription);
-        const safeTitle = escapeHtml(task?.title || summary);
+        // 2) Определяем исполнителя
+        let assigneeDisplay = 'Никто';
+        const assigneeObj = issue.fields.assignee;
+        if (assigneeObj) {
+            // Например, assigneeObj.name = "v.petrov"
+            const assigneeName = assigneeObj.name || assigneeObj.key || "";
+            const displayName = assigneeObj.displayName || assigneeName;
 
-        const userAction = await new Promise(resolve => {
-            db.get(
-                `SELECT * FROM user_actions
-                 WHERE taskId = ?
-                   AND action = "take_task"
-                 ORDER BY timestamp DESC LIMIT 1`,
-                [combinedId],
-                (err, row) => resolve(row)
-            );
-        });
-        const isTaken = !!userAction;
-        const takenBy = isTaken ? (usernameMappings[userAction.username] || userAction.username) : 'Никто';
-
-        const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
-        const isExpanded = currentText.endsWith("...");
-
-        const keyboard = new InlineKeyboard();
-        if ((task?.department === "Техническая поддержка") && (!isTaken || taskStatus === "Open")) {
-            keyboard.text('Взять в работу', `take_task:${combinedId}`);
-        }
-        keyboard
-            .text(isExpanded ? 'Подробнее' : 'Скрыть', `toggle_description:${combinedId}`)
-            .url('Открыть в Jira', taskUrl);
-
-        if (!isExpanded) {
-            // При раскрытии добавим ссылки на вложения, если есть
-            if (issue.fields.attachment && Array.isArray(issue.fields.attachment)) {
-                let counter = 1;
-                for (const att of issue.fields.attachment) {
-                    try {
-                        const fileResp = await axios.get(att.content, {
-                            responseType: 'arraybuffer',
-                            headers: {
-                                'Authorization': `Bearer ${
-                                    source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE
-                                }`
-                            }
-                        });
-
-                        const originalFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
-                        const finalName = `${uuidv4()}_${originalFilename}`;
-                        const filePath = path.join(ATTACHMENTS_DIR, finalName);
-                        fs.writeFileSync(filePath, fileResp.data);
-
-                        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
-                        keyboard.row().url(`Вложение #${counter++}`, publicUrl);
-                    } catch (errAttach) {
-                        console.error('Ошибка при скачивании вложения:', errAttach);
-                    }
+            // Проверяем наш словарь jiraUserMappings, чтобы найти Telegram username
+            let foundTgUser = null;
+            for (const [tgUser, mapObj] of Object.entries(jiraUserMappings)) {
+                // mapObj[source] = "v.petrov" ?
+                if (mapObj[source] === assigneeName) {
+                    foundTgUser = tgUser;
+                    break;
                 }
             }
+            if (foundTgUser) {
+                assigneeDisplay = usernameMappings[foundTgUser] || displayName;
+            } else {
+                // Не из нашего отдела — показываем как есть
+                assigneeDisplay = displayName;
+            }
+        }
+
+        // 3) Проверяем, развернуто ли описание
+        const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
+        const isExpanded = currentText.endsWith("..."); 
+        // Если endsWith('...'), значит сейчас показывается полный текст, кнопка => "Скрыть"
+
+        // 4) Формируем кнопки
+        const keyboard = new InlineKeyboard();
+
+        // Если задача отдела техподдержки и статус "Open", можем показать кнопку «Взять в работу»
+        if (task?.department === "Техническая поддержка" && statusName === "Open") {
+            keyboard.text('Взять в работу', `take_task:${combinedId}`);
+        }
+
+        // Кнопка "Подробнее"/"Скрыть"
+        keyboard.text(isExpanded ? 'Подробнее' : 'Скрыть', `toggle_description:${combinedId}`);
+
+        // Ссылка в Jira
+        const taskUrl = getTaskUrl(source, combinedId);
+        keyboard.url('Открыть в Jira', taskUrl);
+
+        // 5) Формируем текст для editMessageText
+        if (!isExpanded) {
+            // Сейчас скрыто, значит при клике мы хотим показать более длинное описание
+            // => добавим "... в конце"
+            const safeDesc = formatDescriptionAsHtml(description);
 
             await ctx.editMessageText(
                 `<b>Задача:</b> ${combinedId}\n` +
                 `<b>Источник:</b> ${source}\n` +
                 `<b>Приоритет:</b> ${priorityEmoji}\n` +
                 `<b>Тип задачи:</b> ${taskType}\n` +
-                `<b>Заголовок:</b> ${safeSummary}\n` +
-                `<b>Взята в работу:</b> ${takenBy}\n\n` +
-                `<b>Описание:</b>\n${safeDescription}\n\n...`,
+                `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+                `<b>Исполнитель:</b> ${escapeHtml(assigneeDisplay)}\n` +
+                `<b>Статус:</b> ${escapeHtml(statusName)}\n\n` +
+                `<b>Описание:</b>\n${safeDesc}\n\n...`, 
                 { parse_mode: 'HTML', reply_markup: keyboard }
             );
         } else {
+            // Сейчас развернуто => скрываем описание
             await ctx.editMessageText(
                 `<b>Задача:</b> ${combinedId}\n` +
                 `<b>Источник:</b> ${source}\n` +
                 `<b>Ссылка:</b> <a href="${taskUrl}">${taskUrl}</a>\n` +
-                `<b>Описание:</b> ${safeTitle}\n` +
+                `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
                 `<b>Приоритет:</b> ${priorityEmoji}\n` +
                 `<b>Тип задачи:</b> ${taskType}\n` +
-                `<b>Взята в работу:</b> ${takenBy}\n`,
+                `<b>Исполнитель:</b> ${escapeHtml(assigneeDisplay)}\n` +
+                `<b>Статус:</b> ${escapeHtml(statusName)}\n`, 
                 { parse_mode: 'HTML', reply_markup: keyboard }
             );
         }
+
     } catch (err) {
-        console.error('Ошибка в toggle_description:', err);
-        await ctx.reply('Произошла ошибка при обработке вашего запроса.');
+        console.error('Ошибка toggle_description:', err);
+        await ctx.reply('Произошла ошибка при отображении.');
     }
 });
 
