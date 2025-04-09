@@ -735,9 +735,6 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   }).catch(e => console.error('Error sending message to Telegram:', e));
 }
 
-
-
-
 // ----------------------------------------------------------------------------------
 // Callback для разворачивания/сворачивания комментария по кнопкам "Развернуть"/"Свернуть"
 // ----------------------------------------------------------------------------------
