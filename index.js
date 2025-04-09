@@ -55,6 +55,18 @@ db.serialize(() => {
     assignee TEXT,
     FOREIGN KEY(taskId) REFERENCES tasks(id)
   )`);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS comment_cache (
+      taskId TEXT,
+      commentId TEXT,
+      header TEXT,
+      shortHtml TEXT,
+      fullHtml TEXT,
+      attachmentsJson TEXT,
+      source TEXT,
+      PRIMARY KEY (taskId, commentId)
+    )
+  `);  
 });
 
 // Преобразование приоритета в эмодзи
@@ -83,6 +95,7 @@ function getTaskUrl(source, combinedId) {
   const realKey = extractRealJiraKey(combinedId);
   return `https://jira.${source}.team/browse/${realKey}`;
 }
+
 
 // Маппинги: Telegram username → ФИО и Jira логин
 const usernameMappings = {
@@ -116,8 +129,8 @@ const EXPRESS_PORT = 3000;
 app.listen(EXPRESS_PORT, () => {
   console.log(`Express server listening on port ${EXPRESS_PORT}`);
 });
-cron.schedule('0 3 * * *', () => {
-  console.log('[CRON] Удаляем старые файлы из attachments...');
+cron.schedule('0 3 1 * *', () => {
+  console.log('[CRON] Удаляем старые файлы из attachments (ежемесячно)...');
   const now = Date.now();
   const cutoff = now - 24 * 60 * 60 * 1000;
   fs.readdir(ATTACHMENTS_DIR, (err, files) => {
@@ -703,6 +716,25 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     source: source
   };
 
+  try {
+    db.run(
+      `INSERT OR REPLACE INTO comment_cache
+       (taskId, commentId, header, shortHtml, fullHtml, attachmentsJson, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        combinedId,
+        lastComment.id,
+        prefix + header,
+        shortCommentHtml,
+        fullCommentHtml,
+        JSON.stringify(matchingAttachments),
+        source
+      ]
+    );
+  } catch (err) {
+    console.error('[DB] Ошибка при сохранении comment_cache:', err);
+  }
+
   if (hasThumbnail || fullCommentHtml.length > 300) {
     keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
   }
@@ -725,8 +757,32 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
     const combinedId = ctx.match[1];
     const commentId = ctx.match[2];
     const cacheKey = `${combinedId}:${commentId}`;
-    const data = commentCache[cacheKey];
-    if (!data) return ctx.reply('Комментарий не найден в кеше.');
+
+    // Пытаемся достать из памяти
+    let data = commentCache[cacheKey];
+
+    // Если нет в памяти — достаём из базы
+    if (!data) {
+      const row = await new Promise((resolve, reject) => {
+        db.get(
+          `SELECT * FROM comment_cache WHERE cacheKey = ?`,
+          [cacheKey],
+          (err, row) => err ? reject(err) : resolve(row)
+        );
+      });
+
+      if (!row) {
+        return ctx.reply('Комментарий не найден (в кеше и БД)');
+      }
+
+      data = {
+        header: row.header,
+        shortHtml: row.shortHtml,
+        fullHtml: row.fullHtml,
+        attachments: JSON.parse(row.attachments || '[]'),
+        source: row.source
+      };
+    }
 
     const keyboard = new InlineKeyboard()
       .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
@@ -767,14 +823,39 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
 });
 
 
+
 bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
     const combinedId = ctx.match[1];
     const commentId = ctx.match[2];
     const cacheKey = `${combinedId}:${commentId}`;
-    const data = commentCache[cacheKey];
-    if (!data) return ctx.reply('Комментарий не найден в кеше.');
+
+    // Пытаемся достать из памяти
+    let data = commentCache[cacheKey];
+
+    // Если нет в памяти — достаём из базы
+    if (!data) {
+      const row = await new Promise((resolve, reject) => {
+        db.get(
+          `SELECT * FROM comment_cache WHERE cacheKey = ?`,
+          [cacheKey],
+          (err, row) => err ? reject(err) : resolve(row)
+        );
+      });
+
+      if (!row) {
+        return ctx.reply('Комментарий не найден (в кеше и БД)');
+      }
+
+      data = {
+        header: row.header,
+        shortHtml: row.shortHtml,
+        fullHtml: row.fullHtml,
+        attachments: JSON.parse(row.attachments || '[]'),
+        source: row.source
+      };
+    }
 
     const keyboard = new InlineKeyboard()
       .text('Развернуть', `expand_comment:${combinedId}:${commentId}`)
@@ -789,6 +870,7 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка при сворачивании комментария.');
   }
 });
+
 
 
 
