@@ -1107,11 +1107,13 @@ function escapeHtml(text) {
   function convertSquareBracketLinks(text) {
     // Пример: [View alert rule|https://example.com]
     return text.replace(/\[([^\|\]]+)\|([^\]]+)\]/g, (match, linkText, linkUrl) => {
-      const safeText = escapeHtml(linkText);
-      const safeUrl = escapeHtml(linkUrl);
-      return `<a href="${safeUrl}">${safeText}</a>`;
+      const safeText = escapeHtml(linkText.trim());
+      const safeUrl = escapeHtml(linkUrl.trim());
+      // Оборачиваем ссылку в <span> для обеспечения корректного HTML
+      return `<span><a href="${safeUrl}">${safeText}</a></span>`;
     });
   }
+  
   
   /**
    * Преобразует строки, начинающиеся с "# ", в нумерованный список:
