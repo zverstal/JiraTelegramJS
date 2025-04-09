@@ -1173,7 +1173,6 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     const combinedId = ctx.match[1];
     const telegramUsername = ctx.from.username;
 
-    // Получаем задачу из БД
     db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], async (err, task) => {
       if (err) {
         console.error('Ошибка при получении задачи:', err);
@@ -1184,7 +1183,6 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
         return ctx.reply('Эта задача не для ТП; нельзя взять в работу через бота.');
       }
 
-      // Обновляем статус задачи в Jira
       let success = false;
       try {
         success = await updateJiraTaskStatus(task.source, combinedId, telegramUsername);
@@ -1193,7 +1191,6 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
       }
 
       if (success) {
-        // Сохраняем действие пользователя в БД
         db.run(
           `INSERT INTO user_actions (username, taskId, action, timestamp)
            VALUES (?, ?, ?, ?)`,
@@ -1208,7 +1205,6 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
           console.error('Не удалось получить обновленные данные из Jira.');
           return;
         }
-
         // Формируем новый текст сообщения с актуальными данными
         const newMessageText =
           `Задача: ${combinedId}\n` +
@@ -1225,19 +1221,18 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
           `Создатель задачи: ${task.reporter}\n` +
           `Статус: ${updatedIssue.fields.status?.name || task.status}`;
 
-        // Если в кэше есть message_id, редактируем исходное сообщение
+        // Если в кэше есть message_id исходного сообщения, редактируем его
         const messageId = messageIdCache[combinedId];
         if (messageId) {
-          await bot.api.editMessageText(
-            process.env.ADMIN_CHAT_ID,
-            messageId,
-            undefined,
-            newMessageText,
-            { parse_mode: 'HTML' }
-          );
+          try {
+            // Исправляем вызов: убираем передачу undefined и передаем параметры как (chat_id, message_id, text, extra)
+            await bot.api.editMessageText(process.env.ADMIN_CHAT_ID, messageId, newMessageText, { parse_mode: 'HTML' });
+          } catch (errEdit) {
+            console.error('Ошибка при редактировании сообщения:', errEdit);
+          }
         }
 
-        // Дополнительно: через 30 секунд вызываем перенос задачи (если необходимо)
+        // Дополнительно: через 30 секунд вызываем reassignIssueToRealUser (если необходимо)
         setTimeout(async () => {
           const realKey = extractRealJiraKey(combinedId);
           const reassignOk = await reassignIssueToRealUser(task.source, realKey, telegramUsername);
@@ -1254,6 +1249,7 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     await ctx.reply('Произошла ошибка.');
   }
 });
+
 
 
 async function updateJiraTaskStatus(source, combinedId, telegramUsername) {
