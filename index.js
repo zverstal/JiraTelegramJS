@@ -652,7 +652,7 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
   }
 
-  // Извлечение необходимых полей
+  // Извлечение необходимых полей из задачи
   const priority = issue.fields.priority?.name || 'Не указан';
   const taskType = issue.fields.issuetype?.name || 'Не указан';
   const summary = issue.fields.summary || 'Без названия';
@@ -665,8 +665,9 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
 
   // Парсим комментарий (Markdown → HTML)
   let fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
-  // Если комментарий содержит синтаксис миниатюры, превращаем его в пустую строку
-  fullCommentHtml = fullCommentHtml.replace(/!\S+\|thumbnail!/, '');
+  // Если комментарий содержит синтаксис thumbnail (например, "!Снимок экрана 2024-03-21 115904.png|thumbnail!"),
+  // удаляем его (заменяем на пустую строку)
+  fullCommentHtml = fullCommentHtml.replace(/!([^!]+)\|thumbnail!/gi, '');
 
   const MAX_LEN = 300;
   const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
@@ -732,7 +733,6 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   }).catch(e => console.error('Error sending message to Telegram:', e));
 }
 
-  
 
 // ----------------------------------------------------------------------------------
 // Callback для разворачивания/сворачивания комментария по кнопкам "Развернуть"/"Свернуть"
@@ -821,7 +821,9 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
         return ctx.reply('Произошла ошибка при получении задачи.');
       }
       if (!task) return ctx.reply('Задача не найдена в БД.');
-      if (task.department !== "Техническая поддержка") return ctx.reply('Эта задача не для ТП; нельзя взять в работу через бота.');
+      if (task.department !== "Техническая поддержка") {
+        return ctx.reply('Эта задача не для ТП; нельзя взять в работу через бота.');
+      }
       
       let success = false;
       try {
@@ -845,7 +847,7 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
           console.error('Не удалось получить обновленные данные из Jira.');
           return;
         }
-        // Формируем новый текст сообщения с актуальными данными, в частности, обновляем поле "Исполнитель"
+        // Формируем новый текст сообщения, используя актуальные данные из updatedIssue
         const newMessageText =
           `Задача: ${combinedId}\n` +
           `Источник: ${task.source}\n` +
@@ -853,21 +855,37 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
           `Описание: ${updatedIssue.fields.summary || task.title}\n` +
           `Приоритет: ${getPriorityEmoji(updatedIssue.fields.priority?.name || task.priority)}\n` +
           `Тип задачи: ${updatedIssue.fields.issuetype?.name || task.issueType}\n` +
-          `Исполнитель: ${updatedIssue.fields.assignee ? getHumanReadableName(updatedIssue.fields.assignee.name, updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name, task.source) : 'Никто'}\n` +
+          `Исполнитель: ${updatedIssue.fields.assignee ? getHumanReadableName(
+              updatedIssue.fields.assignee.name,
+              updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
+              task.source
+            ) : 'Никто'}\n` +
           `Создатель задачи: ${task.reporter}\n` +
           `Статус: ${updatedIssue.fields.status?.name || task.status}`;
         
-        // Если у нас сохранился message_id, редактируем сообщение
+        // Если у нас сохранился message_id исходного сообщения, редактируем его
         const messageId = messageIdCache[combinedId];
         if (messageId) {
-          await bot.api.editMessageText(process.env.ADMIN_CHAT_ID, messageId, undefined, newMessageText, { parse_mode: 'HTML' });
+          try {
+            await bot.api.editMessageText(
+              process.env.ADMIN_CHAT_ID,
+              messageId,
+              undefined,
+              newMessageText,
+              { parse_mode: 'HTML' }
+            );
+          } catch (errEdit) {
+            console.error('Ошибка при редактировании сообщения:', errEdit);
+          }
         }
         
         // Дополнительно, можно вызвать reassignIssueToRealUser через 30 сек, как раньше
         setTimeout(async () => {
           const realKey = extractRealJiraKey(combinedId);
           const reassignOk = await reassignIssueToRealUser(task.source, realKey, telegramUsername);
-          if (reassignOk) console.log(`Задача ${combinedId} (реально) переназначена на ${telegramUsername}`);
+          if (reassignOk) {
+            console.log(`Задача ${combinedId} (реально) переназначена на ${telegramUsername}`);
+          }
         }, 30000);
       } else {
         await ctx.reply(`Не удалось перевести задачу ${combinedId} в нужный статус (updateJiraTaskStatus failed)`);
@@ -878,6 +896,8 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     await ctx.reply('Произошла ошибка.');
   }
 });
+
+
 
 async function updateJiraTaskStatus(source, combinedId, telegramUsername) {
   try {
