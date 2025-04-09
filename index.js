@@ -1120,9 +1120,13 @@ function escapeHtml(text) {
    */
   function convertHashLinesToNumbered(text) {
     let lines = text.split('\n');
+  
+    // Обязательно объявляем переменные:
+    let result = [];
+    let counter = 1;
+  
     console.log('[DEBUG] Lines before processing:');
     for (let i = 0; i < lines.length; i++) {
-      // Выведем видимые char-коды
       console.log(i, JSON.stringify(lines[i]), lines[i].split('').map(c => c.charCodeAt(0)));
     }
   
@@ -1131,17 +1135,14 @@ function escapeHtml(text) {
       let line = lines[i].replace(/\u00A0/g, ' ');
       let trimmed = line.trim();
   
-      // --- 1) Если строка – это просто "#" (или "# "), 
-      // ищем следующую непустую, чтобы склеить
+      // --- 1) Если строка – это просто "#" (или "# ")
       if (trimmed === '#' || trimmed === '#') {
-        // Ищем следующую строку с «настоящим» текстом
         let nextIndex = i + 1;
         let foundText = null;
   
         while (nextIndex < lines.length) {
           let candidate = lines[nextIndex].replace(/\u00A0/g, ' ').trim();
           if (candidate) {
-            // не пустая => это наш текст
             foundText = candidate;
             break;
           }
@@ -1149,20 +1150,17 @@ function escapeHtml(text) {
         }
   
         if (foundText) {
-          // Склеиваем: "1) foundText"
+          // Склеиваем
           result.push(`${counter++}) ${foundText}`);
-          // Пропускаем все эти пустые строки + саму строку с текстом
+          // Пропускаем до строки nextIndex
           i = nextIndex;
         } else {
-          // Не нашли никакого текста => просто "1)" и выходим
           result.push(`${counter++})`);
-          // но i++ случится в конце цикла
         }
       }
   
       // --- 2) Если строка начинается с "# " (в одной строке вместе с текстом)
       else if (trimmed.startsWith('# ')) {
-        // убираем "# "
         const content = trimmed.slice(2);
         result.push(`${counter++}) ${content}`);
       }
