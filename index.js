@@ -640,6 +640,7 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
     reporterLogin = reporterObj.name;
   }
   
+  
   const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
   const MAX_LEN = 300;
   const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
@@ -651,7 +652,7 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
     ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
     : 'В задаче появился новый комментарий:\n\n';
   
-  const header =
+    const header =
     `<b>Задача:</b> ${combinedId}\n` +
     `<b>Источник:</b> ${source}\n` +
     `<b>Отдел:</b> ${department}\n` +
@@ -663,8 +664,10 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
     //`<b>Логин исполнителя:</b> ${escapeHtml(assigneeLogin)}\n` +
     `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
     //`<b>Логин создателя:</b> ${escapeHtml(reporterLogin)}\n` +
+    `<b>Статус:</b> ${escapeHtml(issue.fields.status?.name || 'Не указан')}\n` +
     `<b>Автор комментария:</b> ${escapeHtml(displayCommentAuthor)}\n` +
     `<b>Комментарий:</b>\n`;
+  
   
   const cacheKey = `${combinedId}:${lastComment.id}`;
   commentCache[cacheKey] = {
