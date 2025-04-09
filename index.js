@@ -751,6 +751,58 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
 }
 
 
+async function refreshCommentCache(taskId, commentId, source) {
+  const issue = await getJiraTaskDetails(source, taskId);
+  if (!issue) throw new Error('Не удалось загрузить актуальные данные задачи');
+
+  const lastComment = issue.fields.comment.comments.find(c => c.id === commentId);
+  if (!lastComment) throw new Error('Комментарий не найден в задаче');
+
+  const assignee = issue.fields.assignee?.displayName || 'Никто';
+  const status = issue.fields.status?.name || '—';
+  const priority = issue.fields.priority?.name || 'Не указан';
+  const taskType = issue.fields.issuetype?.name || 'Не указан';
+  const summary = issue.fields.summary || 'Без названия';
+
+  const header =
+    `<b>Задача:</b> ${taskId}\n` +
+    `<b>Источник:</b> ${source}\n` +
+    `<b>Приоритет:</b> ${getPriorityEmoji(priority)}\n` +
+    `<b>Тип задачи:</b> ${escapeHtml(taskType)}\n` +
+    `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+    `<b>Исполнитель:</b> ${escapeHtml(assignee)}\n` +
+    `<b>Статус:</b> ${escapeHtml(status)}\n` +
+    `<b>Комментарий:</b>\n`;
+
+  const fullHtml = parseCustomMarkdown(lastComment.body || '');
+  const attachments = issue.fields.attachment || [];
+
+  const shortHtml = attachments.length > 0
+    ? '📎 В комментарии вложение, нажми "Развернуть" для просмотра'
+    : safeTruncateHtml(fullHtml, 300);
+
+  const cacheData = {
+    header,
+    shortHtml,
+    fullHtml,
+    attachments,
+    source,
+  };
+
+  commentCache[`${taskId}:${commentId}`] = cacheData;
+
+  db.run(
+    `INSERT OR REPLACE INTO comment_cache
+    (taskId, commentId, header, shortHtml, fullHtml, attachmentsJson, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [taskId, commentId, header, shortHtml, fullHtml, JSON.stringify(attachments), source]
+  );
+
+  return cacheData;
+}
+
+
+
 bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
@@ -758,33 +810,7 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
     const commentId = ctx.match[2];
     const cacheKey = `${combinedId}:${commentId}`;
 
-    // Пытаемся достать из памяти
-    let data = commentCache[cacheKey];
-
-    if (!data) {
-      const [taskId, commentId] = cacheKey.split(':');
-      const row = await new Promise((resolve, reject) => {
-        db.get(
-          `SELECT * FROM comment_cache WHERE taskId = ? AND commentId = ?`,
-          [taskId, commentId],
-          (err, row) => err ? reject(err) : resolve(row)
-        );
-      });
-    
-      if (!row) {
-        return ctx.reply('Комментарий не найден (в кеше и БД)');
-      }
-    
-      data = {
-        header: row.header,
-        shortHtml: row.shortHtml,
-        fullHtml: row.fullHtml,
-        attachments: JSON.parse(row.attachmentsJson || '[]'),
-        source: row.source
-      };
-    
-      commentCache[cacheKey] = data; // добавим в кэш для повторного использования
-    }
+    let data = await refreshCommentCache(combinedId, commentId, combinedId.split('-')[0]);
 
     const keyboard = new InlineKeyboard()
       .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
@@ -826,6 +852,7 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
 
 
 
+
 bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
@@ -833,34 +860,8 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
     const commentId = ctx.match[2];
     const cacheKey = `${combinedId}:${commentId}`;
 
-    // Пытаемся достать из памяти
-    let data = commentCache[cacheKey];
-
-    // Если нет в памяти — достаём из базы
-    if (!data) {
-      const [taskId, commentId] = cacheKey.split(':');
-      const row = await new Promise((resolve, reject) => {
-        db.get(
-          `SELECT * FROM comment_cache WHERE taskId = ? AND commentId = ?`,
-          [taskId, commentId],
-          (err, row) => err ? reject(err) : resolve(row)
-        );
-      });
-
-      if (!row) {
-        return ctx.reply('Комментарий не найден (в кеше и БД)');
-      }
-
-      data = {
-        header: row.header,
-        shortHtml: row.shortHtml,
-        fullHtml: row.fullHtml,
-        attachments: JSON.parse(row.attachmentsJson || '[]'),
-        source: row.source
-      };
-
-      commentCache[cacheKey] = data; // сохраняем в in-memory кэш
-    }
+    // Обновляем данные из Jira
+    let data = await refreshCommentCache(combinedId, commentId, combinedId.split('-')[0]);
 
     const keyboard = new InlineKeyboard()
       .text('Развернуть', `expand_comment:${combinedId}:${commentId}`)
@@ -875,8 +876,6 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка при сворачивании комментария.');
   }
 });
-
-
 
 
 
