@@ -1020,10 +1020,12 @@ function escapeHtml(text) {
    * # item => "1) item", # another => "2) another", и т.д.
    */
   function convertHashLinesToNumbered(text) {
-    // Разбиваем по переносам строк
     let lines = text.split('\n');
-    let result = [];
-    let counter = 1;
+    console.log('[DEBUG] Lines before processing:');
+    for (let i = 0; i < lines.length; i++) {
+      // Выведем видимые char-коды
+      console.log(i, JSON.stringify(lines[i]), lines[i].split('').map(c => c.charCodeAt(0)));
+    }
   
     for (let i = 0; i < lines.length; i++) {
       // Убираем неразрывные пробелы \u00A0 → обычные пробелы
