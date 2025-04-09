@@ -790,34 +790,36 @@ const commentCache = {};
 /**
  * Отправляет уведомление о новом комментарии.
  */
+// Функция отправки уведомления о новом комментарии
 function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
+    // Создаём клавиатуру, добавляя кнопку "Перейти к задаче"
     const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
-  
-    // Преобразуем имя автора через маппинг
+    
+    // Маппинг имени автора
     let displayAuthor = authorName;
     const mappedAuthor = getHumanReadableName(authorName, source);
     if (mappedAuthor) {
       displayAuthor = mappedAuthor;
     }
-  
+    
     // Получаем HTML комментария через парсер
     const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
-  
-    // Обрезаем HTML безопасно, чтобы не обрезать тег посередине
-    const MAX_LEN = 300; // пороговая длина в символах
-    let shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
-  
-    // Если полный текст длиннее максимально допустимого, добавляем кнопку "Развернуть"
+    
+    // Обрезаем HTML с помощью safeTruncateHtml, чтобы не обрезать тег посередине
+    const MAX_LEN = 300; // пороговая длина
+    const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
+    
+    // Если полный текст длиннее — добавляем кнопку "Развернуть"
     if (fullCommentHtml.length > MAX_LEN) {
       keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
     }
-  
-    // Префикс уведомления
+    
+    // Префикс уведомления зависит от того, от технической поддержки ли комментарий
     const prefix = isOurComment
       ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
       : 'В задаче появился новый комментарий:\n\n';
-  
-    // Формируем «заголовок» уведомления (до блока "Комментарий:")
+    
+    // Формируем заголовок уведомления
     const header =
       `<b>Задача:</b> ${combinedId}\n` +
       `<b>Источник:</b> ${source}\n` +
@@ -829,8 +831,8 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
       `<b>Исполнитель:</b> ${escapeHtml(issue.fields.assignee?.displayName || 'Не указан')}\n` +
       `<b>Автор комментария:</b> ${escapeHtml(displayAuthor)}\n` +
       `<b>Комментарий:</b>\n`;
-  
-    // Сохраняем в кэше header, оба варианта комментария и source для callback'ов
+    
+    // Сохраняем в кэше заголовок, варианты комментария и source для callback'ов
     const cacheKey = `${combinedId}:${lastComment.id}`;
     commentCache[cacheKey] = {
       header: prefix + header,
@@ -838,81 +840,84 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
       fullHtml: fullCommentHtml,
       source: source
     };
-  
-    const finalText = commentCache[cacheKey].header + shortCommentHtml;
-  
+    
+    // Итоговый текст
+    let finalText = commentCache[cacheKey].header + shortCommentHtml;
+    
+    // Перед отправкой заменяем все <span> на <tg-spoiler>
+    finalText = finalText
+      .replace(/<span>/gi, '<tg-spoiler>')
+      .replace(/<\/span>/gi, '</tg-spoiler>');
+    
     console.log('[DEBUG] Final message text to send:', finalText);
-  
+    
     sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
       reply_markup: keyboard,
       parse_mode: 'HTML'
     }).catch(e => console.error('Error sending message to Telegram:', e));
   }
-  
-  
-// Callback для разворачивания комментария
-bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
-  try {
-    await ctx.answerCallbackQuery();
-    const combinedId = ctx.match[1];
-    const commentId = ctx.match[2];
-    const cacheKey = `${combinedId}:${commentId}`;
-  
-    const data = commentCache[cacheKey];
-    if (!data) {
-      return ctx.reply('Комментарий не найден в кеше (возможно, бот был перезапущен?)');
+    
+  // Callback для разворачивания комментария
+  bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
+    try {
+      await ctx.answerCallbackQuery();
+      const combinedId = ctx.match[1];  // ID задачи
+      const commentId = ctx.match[2];   // ID комментария
+      const cacheKey = `${combinedId}:${commentId}`;
+    
+      const data = commentCache[cacheKey];
+      if (!data) {
+        return ctx.reply('Комментарий не найден в кеше (возможно, бот был перезапущен?)');
+      }
+    
+      // Формируем новый текст: заголовок + полный комментарий
+      const newText = data.header + data.fullHtml;
+      const keyboard = new InlineKeyboard()
+        .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
+        .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
+    
+      console.log('[DEBUG] Expand comment newText:', newText);
+    
+      await ctx.editMessageText(newText, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard
+      });
+    } catch (err) {
+      console.error('expand_comment error:', err);
+      await ctx.reply('Ошибка при раскрытии комментария.');
     }
-  
-    // Формируем новый текст: header + полный комментарий
-    const newText = data.header + data.fullHtml;
-    const keyboard = new InlineKeyboard()
-      .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
-      .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
-  
-    // Выводим новый текст (опционально добавьте лог)
-    console.log('[DEBUG] Expand comment newText:', newText);
-  
-    await ctx.editMessageText(newText, {
-      parse_mode: 'HTML',
-      reply_markup: keyboard
-    });
-  } catch (err) {
-    console.error('expand_comment error:', err);
-    await ctx.reply('Ошибка при раскрытии комментария.');
-  }
-});
-  
-// Callback для сворачивания комментария
-bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
-  try {
-    await ctx.answerCallbackQuery();
-    const combinedId = ctx.match[1];
-    const commentId = ctx.match[2];
-    const cacheKey = `${combinedId}:${commentId}`;
-  
-    const data = commentCache[cacheKey];
-    if (!data) {
-      return ctx.reply('Комментарий не найден в кеше.');
+  });
+    
+  // Callback для сворачивания комментария
+  bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
+    try {
+      await ctx.answerCallbackQuery();
+      const combinedId = ctx.match[1];
+      const commentId = ctx.match[2];
+      const cacheKey = `${combinedId}:${commentId}`;
+    
+      const data = commentCache[cacheKey];
+      if (!data) {
+        return ctx.reply('Комментарий не найден в кеше.');
+      }
+    
+      // Формируем текст: заголовок + краткий комментарий
+      const newText = data.header + data.shortHtml;
+      const keyboard = new InlineKeyboard()
+        .text('Развернуть', `expand_comment:${combinedId}:${commentId}`)
+        .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
+    
+      console.log('[DEBUG] Collapse comment newText:', newText);
+    
+      await ctx.editMessageText(newText, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard
+      });
+    } catch (err) {
+      console.error('collapse_comment error:', err);
+      await ctx.reply('Ошибка при сворачивании комментария.');
     }
-  
-    // Формируем новый текст: header + короткий комментарий
-    const newText = data.header + data.shortHtml;
-    const keyboard = new InlineKeyboard()
-      .text('Развернуть', `expand_comment:${combinedId}:${commentId}`)
-      .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
-  
-    console.log('[DEBUG] Collapse comment newText:', newText);
-  
-    await ctx.editMessageText(newText, {
-      parse_mode: 'HTML',
-      reply_markup: keyboard
-    });
-  } catch (err) {
-    console.error('collapse_comment error:', err);
-    await ctx.reply('Ошибка при сворачивании комментария.');
-  }
-});
-
+  });
   
 
 // ----------------------------------------------------------------------------------
@@ -1111,17 +1116,12 @@ function escapeHtml(text) {
 
   function safeTruncateHtml(html, maxLength) {
     if (html.length <= maxLength) return html;
-    
     let truncated = html.slice(0, maxLength);
-    // Считаем количество открывающих тегов <a и закрывающих </a>
-    const openA = (truncated.match(/<a\b/gi) || []).length;
-    const closeA = (truncated.match(/<\/a>/gi) || []).length;
-    if (openA > closeA) {
-      // Если тег <a> не закрыт, удаляем от последнего открытия до конца обрезанной строки
-      const lastOpenIdx = truncated.lastIndexOf('<a');
-      if (lastOpenIdx !== -1) {
-        truncated = truncated.slice(0, lastOpenIdx);
-      }
+    // Если последний открывающий тег не закрыт, отрезаем его
+    const lastOpenIndex = truncated.lastIndexOf('<');
+    const lastCloseIndex = truncated.lastIndexOf('>');
+    if (lastOpenIndex > lastCloseIndex) {
+      truncated = truncated.slice(0, lastOpenIndex);
     }
     return truncated + '...';
   }
