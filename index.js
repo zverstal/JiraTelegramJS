@@ -1004,7 +1004,7 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
           `<b>Источник:</b> ${source}\n` +
           `<b>Ссылка:</b> <a href="https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}">Открыть в Jira</a>\n` +
           `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
-          `<b>Приоритет:</b> ${priorityEmoji}\n` +
+          `<b>Приоритет:</b> ${getPriorityEmoji(task.priority)}\n` +
           `<b>Тип задачи:</b> ${taskType}\n` +
           `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
           //`<b>Логин исполнителя:</b> ${escapeHtml(assigneeObj ? assigneeObj.name : 'Не указан')}\n` +
