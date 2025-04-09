@@ -664,17 +664,25 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   const commentDisplayRaw = lastComment.author?.displayName || authorName;
   const commentAuthor = getHumanReadableName(commentAuthorRaw, commentDisplayRaw, source);
 
-  // Парсим комментарий и убираем mini-thumbnail
-  let fullCommentHtml = parseCustomMarkdown(lastComment.body || '').replace(/!\S+?\|thumbnail!/gi, '');
+  // Чистим thumbnail-ссылки и парсим Markdown → HTML
+  let fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
+  fullCommentHtml = fullCommentHtml.replace(/!\S+?\|thumbnail!/gi, '');
 
   const MAX_LEN = 300;
   const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
 
-  // Загрузка вложений только из lastComment.attachments
-  const attachmentsForCache = [];
-  if (lastComment.attachments && Array.isArray(lastComment.attachments)) {
+  // Добавляем кнопку "Развернуть", если длинный текст или есть вложения
+  const hasAttachments = Array.isArray(lastComment.attachments) && lastComment.attachments.length > 0;
+  if (fullCommentHtml.length > MAX_LEN || hasAttachments) {
+    keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
+  }
+
+  // Загружаем вложения из комментария
+  const attachmentButtons = [];
+  if (hasAttachments) {
     let attachmentCounter = 1;
     const currentTunnelUrl = process.env.PUBLIC_BASE_URL;
+
     for (const att of lastComment.attachments) {
       try {
         const fileResp = await axios.get(att.content, {
@@ -683,22 +691,21 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
             'Authorization': `Bearer ${source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
           }
         });
+
         const originalFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
         const finalName = `${uuidv4()}_${originalFilename}`;
         const filePath = path.join(ATTACHMENTS_DIR, finalName);
         fs.writeFileSync(filePath, fileResp.data);
         const publicUrl = `${currentTunnelUrl}/attachments/${finalName}`;
-        const label = `Вложение #${attachmentCounter++}`;
-        keyboard.row().url(label, publicUrl);
-        attachmentsForCache.push({ label, url: publicUrl });
+
+        // Для развернутой версии
+        attachmentButtons.push({ label: `Вложение #${attachmentCounter++}`, url: publicUrl });
+
+        // В свернутую сразу не добавляем
       } catch (errAttach) {
         console.error('Ошибка при скачивании вложения из комментария:', errAttach);
       }
     }
-  }
-
-  if (fullCommentHtml.length > MAX_LEN || attachmentsForCache.length > 0) {
-    keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
   }
 
   const prefix = isOurComment
@@ -706,8 +713,8 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     : 'В задаче появился новый комментарий:\n\n';
 
   const header =
-    `<b>Задача:</b> ${combinedId}\n` +
-    `<b>Источник:</b> ${source}\n` +
+    `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
+    `<b>Источник:</b> ${escapeHtml(source)}\n` +
     `<b>Приоритет:</b> ${getPriorityEmoji(priority)}\n` +
     `<b>Тип задачи:</b> ${escapeHtml(taskType)}\n` +
     `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
@@ -723,7 +730,7 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     shortHtml: shortCommentHtml,
     fullHtml: fullCommentHtml,
     source: source,
-    attachments: attachmentsForCache
+    attachments: attachmentButtons
   };
 
   let finalText = commentCache[cacheKey].header + shortCommentHtml;
@@ -731,11 +738,12 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
 
   console.log('[DEBUG] Final message text to send:', finalText);
 
-  sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
+  await sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
     reply_markup: keyboard,
     parse_mode: 'HTML'
-  }).catch(e => console.error('Error sending message to Telegram:', e));
+  });
 }
+
 
 
 
