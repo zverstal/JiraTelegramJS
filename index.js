@@ -1020,16 +1020,45 @@ function escapeHtml(text) {
    * # item => "1) item", # another => "2) another", и т.д.
    */
   function convertHashLinesToNumbered(text) {
+    let lines = text.split('\n');
+    let result = [];
     let counter = 1;
-    const lines = text.split('\n');
-    const result = lines.map(line => {
+  
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       const trimmed = line.trim();
-      if (trimmed.startsWith('# ')) {
-        const content = trimmed.slice(2); // убираем "# "
-        return `${counter++}) ${content}`;
+  
+      // 1) Случай, когда строка == "#" или "# "
+      //    => сливаем с content из следующей строки (если есть)
+      if ((trimmed === '#' || trimmed === '# ') && i < lines.length - 1) {
+        // Следующая строка
+        const nextLine = lines[i + 1];
+        const nextTrimmed = nextLine.trim();
+        if (nextTrimmed) {
+          // Формируем "N) nextTrimmed" 
+          result.push(`${counter++}) ${nextTrimmed}`);
+        } else {
+          // Если вдруг следующая строка пустая, тоже добавим 
+          // (но будет "N) " без контента)
+          result.push(`${counter++})`);
+        }
+        // Пропускаем следующую строку, чтобы не дублировать
+        i++;
       }
-      return line;
-    });
+  
+      // 2) Случай, когда есть "# " в начале *одной* строки: "# Opensearch DUView..."
+      else if (trimmed.startsWith('# ')) {
+        // Убираем "# " и подставляем счётчик
+        const content = trimmed.slice(2); // убираем "# "
+        result.push(`${counter++}) ${content}`);
+      }
+  
+      // 3) Иначе оставляем без изменений
+      else {
+        result.push(line);
+      }
+    }
+  
     return result.join('\n');
   }
   
