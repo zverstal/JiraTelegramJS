@@ -477,7 +477,7 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
 async function getJiraTaskDetails(source, combinedId) {
   try {
     const realKey = extractRealJiraKey(combinedId);
-    const url = `https://jira.${source}.team/rest/api/2/issue/${realKey}?fields=summary,description,attachment,priority,issuetype,status,assignee,reporter,creator`;
+    const url = `https://jira.${source}.team/rest/api/2/issue/${realKey}?fields=summary,comment,description,attachment,priority,issuetype,status,assignee,reporter,creator`;
     const pat = (source === 'sxl') ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
     console.log(`[getJiraTaskDetails] GET ${url}`);
     const response = await axios.get(url, {
@@ -926,12 +926,14 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery('🔄 Обновляем данные задачи...');
     const combinedId = ctx.match[1];
 
+    let source;
     let task = await new Promise(resolve => {
       db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
     });
 
-    let source = task?.source;
-    if (!source) {
+    if (task) {
+      source = task.source;
+    } else {
       const txt = ctx.callbackQuery.message?.text || "";
       const match = txt.match(/Источник:\s*([^\n]+)/i);
       source = match ? match[1].trim() : combinedId.split('-')[0];
@@ -946,40 +948,48 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
       `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
       `<b>Источник:</b> ${escapeHtml(source)}\n` +
       `<b>Ссылка:</b> <a href="${escapeHtml(getTaskUrl(source, combinedId))}">Открыть в Jira</a>\n` +
-      `<b>Описание:</b> ${escapeHtml(updatedIssue.fields.summary || task?.title || '—')}\n` +
-      `<b>Приоритет:</b> ${getPriorityEmoji(updatedIssue.fields.priority?.name || task?.priority || '—')}\n` +
-      `<b>Тип задачи:</b> ${escapeHtml(updatedIssue.fields.issuetype?.name || task?.issueType || '—')}\n` +
-      `<b>Исполнитель:</b> ${
-        updatedIssue.fields.assignee
-          ? escapeHtml(getHumanReadableName(
-              updatedIssue.fields.assignee.name,
-              updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
-              source
-            ))
-          : 'Никто'}\n` +
-      `<b>Создатель задачи:</b> ${
-        escapeHtml(getHumanReadableName(
-          task?.reporterLogin || updatedIssue.fields.reporter?.name,
-          task?.reporter || updatedIssue.fields.reporter?.displayName || '—',
-          source
-        ))}\n` +
-      `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || task?.status || '—')}`;
+      `<b>Описание:</b> ${escapeHtml(updatedIssue.fields.summary || task?.title || '')}\n` +
+      `<b>Приоритет:</b> ${getPriorityEmoji(updatedIssue.fields.priority?.name || task?.priority || '')}\n` +
+      `<b>Тип задачи:</b> ${escapeHtml(updatedIssue.fields.issuetype?.name || task?.issueType || '')}\n` +
+      `<b>Исполнитель:</b> ${updatedIssue.fields.assignee 
+        ? escapeHtml(getHumanReadableName(
+            updatedIssue.fields.assignee.name,
+            updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
+            source
+          ))
+        : 'Никто'}\n` +
+      `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(
+        task?.reporterLogin || updatedIssue.fields.reporter?.name,
+        task?.reporter || updatedIssue.fields.reporter?.displayName || '',
+        source
+      ))}\n` +
+      `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || task?.status || '')}`;
 
     const keyboard = new InlineKeyboard()
       .text('🔄 Обновить данные', `refresh_task:${combinedId}`)
       .url('Открыть в Jira', getTaskUrl(source, combinedId));
 
-    const finalText = updatedText + '\u2063'; // невидимый символ
+    const currentText = ctx.callbackQuery.message?.text?.replace(/\u2063/g, '').trim();
+    const newText = updatedText.replace(/\u2063/g, '').trim();
+    const currentMarkup = JSON.stringify(ctx.callbackQuery.message?.reply_markup?.inline_keyboard || []);
+    const newMarkup = JSON.stringify(keyboard.inline_keyboard);
 
-    await ctx.editMessageText(finalText, {
+    if (currentText === newText && currentMarkup === newMarkup) {
+      console.log('[refresh_task] Ничего не изменилось, не редактируем');
+      return;
+    }
+
+    await ctx.editMessageText(updatedText + '\u2063', {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
+
   } catch (err) {
     console.error('refresh_task error:', err);
     await ctx.reply('Ошибка обновления задачи.');
   }
 });
+
 
 
 
