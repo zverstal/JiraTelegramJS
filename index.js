@@ -848,6 +848,16 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
           console.error('Не удалось получить обновленные данные из Jira.');
           return;
         }
+
+
+        function escapeHtml(text) {
+          if (!text) return '';
+          return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        }
+
         // Формируем новый текст сообщения, используя актуальные данные из updatedIssue
         const newMessageText =
           `Задача: ${combinedId}\n` +
