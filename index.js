@@ -969,8 +969,9 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
       .text('🔄 Обновить данные', `refresh_task:${combinedId}`)
       .url('Открыть в Jira', getTaskUrl(source, combinedId));
 
-    const currentText = ctx.callbackQuery.message?.text?.replace(/\u2063/g, '').trim();
-    const newText = updatedText.replace(/\u2063/g, '').trim();
+    // Текущий текст и клавиатура
+    const currentText = (ctx.callbackQuery.message?.text ?? "").trim().replace(/\u2063/g, '');
+    const newText = updatedText.trim().replace(/\u2063/g, '');
     const currentMarkup = JSON.stringify(ctx.callbackQuery.message?.reply_markup?.inline_keyboard || []);
     const newMarkup = JSON.stringify(keyboard.inline_keyboard);
 
@@ -979,6 +980,7 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
       return;
     }
 
+    // Добавляем невидимый символ для "форса"
     await ctx.editMessageText(updatedText + '\u2063', {
       parse_mode: 'HTML',
       reply_markup: keyboard
@@ -989,6 +991,7 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка обновления задачи.');
   }
 });
+
 
 
 
