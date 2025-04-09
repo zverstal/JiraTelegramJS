@@ -802,17 +802,17 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
   
     // Получаем HTML комментария через парсер
     const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
-    
-    // Обрезаем комментарий корректно, чтобы не обрезать тег посередине.
-    const MAX_LEN = 300; // пороговая длина в символах
-    let shortCommentHtml = truncateHtml(fullCommentHtml, MAX_LEN);
   
-    // Если текст был обрезан, добавляем кнопку "Развернуть"
+    // Обрезаем HTML безопасно, чтобы не обрезать тег посередине
+    const MAX_LEN = 300; // пороговая длина в символах
+    let shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
+  
+    // Если полный текст длиннее максимально допустимого, добавляем кнопку "Развернуть"
     if (fullCommentHtml.length > MAX_LEN) {
       keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
     }
   
-    // Выбираем префикс для комментария от техподдержки, если нужно
+    // Префикс уведомления
     const prefix = isOurComment
       ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
       : 'В задаче появился новый комментарий:\n\n';
@@ -849,8 +849,7 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
     }).catch(e => console.error('Error sending message to Telegram:', e));
   }
   
-
-
+  
 // Callback для разворачивания комментария
 bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
   try {
@@ -1110,20 +1109,21 @@ function escapeHtml(text) {
     });
   }
 
-  function truncateHtml(html, maxLength) {
+  function safeTruncateHtml(html, maxLength) {
     if (html.length <= maxLength) return html;
     
-    // Пытаемся найти последний закрывающий тег </a> до maxLength
-    const closeTag = "</a>";
-    const lastCloseIdx = html.lastIndexOf(closeTag, maxLength);
-    
-    if (lastCloseIdx !== -1) {
-      // Обрезаем так, чтобы тег </a> был завершён
-      return html.slice(0, lastCloseIdx + closeTag.length) + '...';
+    let truncated = html.slice(0, maxLength);
+    // Считаем количество открывающих тегов <a и закрывающих </a>
+    const openA = (truncated.match(/<a\b/gi) || []).length;
+    const closeA = (truncated.match(/<\/a>/gi) || []).length;
+    if (openA > closeA) {
+      // Если тег <a> не закрыт, удаляем от последнего открытия до конца обрезанной строки
+      const lastOpenIdx = truncated.lastIndexOf('<a');
+      if (lastOpenIdx !== -1) {
+        truncated = truncated.slice(0, lastOpenIdx);
+      }
     }
-    
-    // Если нет закрывающего тега, возвращаем обычное обрезание
-    return html.slice(0, maxLength) + '...';
+    return truncated + '...';
   }
   
   
