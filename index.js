@@ -745,8 +745,6 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
 }
 
 
-
-
 bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
