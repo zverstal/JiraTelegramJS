@@ -1260,30 +1260,30 @@ function escapeHtml(text) {
 
 
   function getHumanReadableName(jiraName, displayName, source) {
-    // Приводим к нижнему регистру
-    let normalizedJiraName = jiraName.trim().toLowerCase();
-  
-    // Если в jiraName нет точки, предполагаем, что это displayName и пытаемся создать login-подобное значение
-    if (!normalizedJiraName.includes('.')) {
-      // Разбиваем displayName по пробелам
-      const parts = displayName.trim().toLowerCase().split(/\s+/);
-      if (parts.length >= 2) {
-        // Формируем логин: первая буква имени + '.' + фамилия
-        normalizedJiraName = parts[0][0] + "." + parts[parts.length - 1];
+    // Приводим поле jiraName к нижнему регистру (оно должно быть логином)
+    const login = (jiraName || "").trim().toLowerCase();
+    if (login) {
+      // Ищем в нашем маппинге, сравнивая с jiraName
+      for (const [telegramUser, mapping] of Object.entries(jiraUserMappings)) {
+        if ((mapping[source] || "").trim().toLowerCase() === login) {
+          return usernameMappings[telegramUser] || displayName;
+        }
       }
     }
-  
-    // Ищем совпадение в нашем маппинге
-    for (const [telegramUser, mapObj] of Object.entries(jiraUserMappings)) {
-      const mappedLogin = (mapObj[source] || "").trim().toLowerCase();
-      if (mappedLogin === normalizedJiraName) {
-        return usernameMappings[telegramUser] || displayName;
+    // Если jiraName не определён или не дал совпадения, попробуем сформировать логин из displayName
+    const parts = displayName.trim().toLowerCase().split(/\s+/);
+    if (parts.length >= 2) {
+      const generatedLogin = parts[0][0] + "." + parts[parts.length - 1];
+      for (const [telegramUser, mapping] of Object.entries(jiraUserMappings)) {
+        if ((mapping[source] || "").trim().toLowerCase() === generatedLogin) {
+          return usernameMappings[telegramUser] || displayName;
+        }
       }
     }
+    // Если совпадение так и не найдено – возвращаем displayName как есть
     return displayName;
   }
   
-
 
   bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
