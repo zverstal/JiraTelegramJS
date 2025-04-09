@@ -610,19 +610,21 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
 
 async function getJiraTaskDetails(source, combinedId) {
     try {
-        const realKey = extractRealJiraKey(combinedId);
-        const url = `https://jira.${source}.team/rest/api/2/issue/${realKey}?fields=summary,description,attachment,priority,issuetype,status`;
-        const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
+        // Убираем префикс "betone-" или "sxl-" для реального ключа
+        const realKey = extractRealJiraKey(combinedId); // Например, "SUPPORT-574"
+        const url = `https://jira.${source}.team/rest/api/2/issue/${realKey}?fields=summary,description,attachment,priority,issuetype,status,assignee`;
+        const pat = (source === 'sxl') ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
 
+        console.log(`[getJiraTaskDetails] GET ${url}`);
         const response = await axios.get(url, {
             headers: {
                 'Authorization': `Bearer ${pat}`,
                 'Accept': 'application/json'
             }
         });
-        return response.data;
+        return response.data; // объект issue от Jira
     } catch (error) {
-        console.error(`Ошибка при получении данных задачи ${combinedId} из Jira (${source}):`, error);
+        console.error(`[getJiraTaskDetails] Ошибка GET ${source}-${combinedId}:`, error);
         return null;
     }
 }
