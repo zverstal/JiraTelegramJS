@@ -759,27 +759,51 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
       return ctx.reply('Комментарий не найден в кеше (возможно, бот был перезапущен?)');
     }
 
-    const newText = data.header + data.fullHtml;
     const keyboard = new InlineKeyboard()
       .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
       .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
 
-    if (data.attachments && Array.isArray(data.attachments)) {
-      for (const att of data.attachments) {
-        keyboard.row().url(att.label, att.url);
+    // Получаем вложения повторно — только из комментария
+    const [source, realKey] = [data.source, extractRealJiraKey(combinedId)];
+    const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
+    const issueResp = await axios.get(`https://jira.${source}.team/rest/api/2/issue/${realKey}?fields=comment`, {
+      headers: { Authorization: `Bearer ${pat}` }
+    });
+
+    const comments = issueResp.data.fields.comment?.comments || [];
+    const targetComment = comments.find(c => c.id === commentId);
+    const attachments = (targetComment?.attachments || []).filter(a => !!a?.filename);
+
+    let attachmentCounter = 1;
+    for (const att of attachments) {
+      try {
+        const fileResp = await axios.get(att.content, {
+          responseType: 'arraybuffer',
+          headers: { Authorization: `Bearer ${pat}` }
+        });
+        const sanitizedFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
+        const finalName = `${uuidv4()}_${sanitizedFilename}`;
+        const filePath = path.join(ATTACHMENTS_DIR, finalName);
+        fs.writeFileSync(filePath, fileResp.data);
+        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
+        keyboard.row().url(`Вложение #${attachmentCounter++}`, publicUrl);
+      } catch (err) {
+        console.error('Ошибка при скачивании вложения в expand_comment:', err);
       }
     }
 
+    const newText = data.header + data.fullHtml;
+    console.log('[DEBUG] Expand comment newText:', newText);
     await ctx.editMessageText(newText, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
+
   } catch (err) {
     console.error('expand_comment error:', err);
     await ctx.reply('Ошибка при раскрытии комментария.');
   }
 });
-
 
 
 bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
