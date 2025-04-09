@@ -810,92 +810,100 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, author, dep
 // ----------------------------------------------------------------------------------
 // 7) КНОПКА «ВЗЯТЬ В РАБОТУ»
 // ----------------------------------------------------------------------------------
+async function reassignIssueToRealUser(source, realJiraKey, telegramUsername) {
+    try {
+        // Находим Jira-логин из вашего словаря
+        const jiraUsername = jiraUserMappings[telegramUsername]?.[source];
+        if (!jiraUsername) {
+            console.log(`[reassignIssueToRealUser] Нет маппинга для ${telegramUsername} → Jira (source=${source})`);
+            return false;
+        }
+
+        const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
+        const assigneeUrl = `https://jira.${source}.team/rest/api/2/issue/${realJiraKey}/assignee`;
+
+        const r = await axios.put(
+            assigneeUrl,
+            { name: jiraUsername },
+            {
+                headers: {
+                    'Authorization': `Bearer ${pat}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        if (r.status === 204) {
+            console.log(`[reassignIssueToRealUser] Успешно назначили ${realJiraKey} на ${jiraUsername}`);
+            return true;
+        } else {
+            console.warn(`[reassignIssueToRealUser] Статус=${r.status}, не удалось`);
+            return false;
+        }
+    } catch (err) {
+        console.error(`[reassignIssueToRealUser] Ошибка:`, err);
+        return false;
+    }
+}
 
 bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
     try {
         await ctx.answerCallbackQuery();
         const combinedId = ctx.match[1];
-        const username = ctx.from.username;
+        const telegramUsername = ctx.from.username;
 
         db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], async (err, task) => {
             if (err) {
                 console.error('Ошибка при получении задачи:', err);
-                const keyboard = new InlineKeyboard()
-                    .text('Подробнее', `toggle_description:${combinedId}`)
-                    .url('Перейти к задаче', getTaskUrl('sxl', combinedId));
-                return ctx.reply('Произошла ошибка при получении задачи.', { reply_markup: keyboard });
+                return ctx.reply('Произошла ошибка при получении задачи.');
             }
-
             if (!task) {
-                const keyboard = new InlineKeyboard()
-                    .text('Подробнее', `toggle_description:${combinedId}`)
-                    .url('Перейти к задаче', getTaskUrl('sxl', combinedId));
-
-                try {
-                    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-                } catch {}
-                return ctx.reply('Задача не найдена в БД.', { reply_markup: keyboard });
+                return ctx.reply('Задача не найдена в БД.');
+            }
+            if (task.department !== "Техническая поддержка") {
+                return ctx.reply('Эта задача не для ТП; нельзя взять в работу через бота.');
             }
 
-            if (task.department === "Техническая поддержка") {
-                let success = false;
-                try {
-                    success = await updateJiraTaskStatus(task.source, combinedId, username);
-                } catch (errUpd) {
-                    console.error('Ошибка updateJiraTaskStatus:', errUpd);
-                }
+            // 1) Делаем transition в Jira (как раньше)
+            let success = false;
+            try {
+                success = await updateJiraTaskStatus(task.source, combinedId, telegramUsername);
+            } catch (errUpd) {
+                console.error('Ошибка updateJiraTaskStatus:', errUpd);
+            }
 
-                const displayName = usernameMappings[username] || username;
-                const keyboard = new InlineKeyboard()
-                    .text('Подробнее', `toggle_description:${task.id}`)
-                    .url('Перейти к задаче', getTaskUrl(task.source, task.id));
-
-                if (success) {
-                    const msg =
-                        `Задача: ${task.id}\n` +
-                        `Источник: ${task.source}\n` +
-                        `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
-                        `Описание: ${task.title}\n` +
-                        `Приоритет: ${getPriorityEmoji(task.priority)}\n` +
-                        `Отдел: ${task.department}\n` +
-                        `Взял в работу: ${displayName}`;
-
-                    try {
-                        await ctx.editMessageText(msg, { reply_markup: keyboard });
-                    } catch (e) {
-                        console.error('Ошибка editMessageText:', e);
-                    }
-
-                    db.run(
-                        `INSERT INTO user_actions (username, taskId, action, timestamp)
-                         VALUES (?, ?, ?, ?)`,
-                        [username, combinedId, 'take_task', getMoscowTimestamp()]
-                    );
-                } else {
-                    await ctx.reply(
-                        `Не удалось обновить статус задачи ${task.id}. Попробуйте снова.`,
-                        { reply_markup: keyboard }
-                    );
-                }
-            } else {
-                const keyboard = new InlineKeyboard()
-                    .text('Подробнее', `toggle_description:${task.id}`)
-                    .url('Перейти к задаче', getTaskUrl(task.source, task.id));
-                await ctx.reply(
-                    'Эта задача не для отдела Технической поддержки и не может быть взята в работу через этот бот.',
-                    { reply_markup: keyboard }
+            // Вставляем запись в user_actions, чтобы фиксировать, кто взял
+            if (success) {
+                db.run(
+                    `INSERT INTO user_actions (username, taskId, action, timestamp)
+                     VALUES (?, ?, ?, ?)`,
+                    [telegramUsername, combinedId, 'take_task', getMoscowTimestamp()]
                 );
+
+                // Сообщим в чат
+                const displayName = usernameMappings[telegramUsername] || telegramUsername;
+                await ctx.reply(`OK, задачу ${combinedId} взял в работу: ${displayName}.`);
+
+                // 2) Через 30 сек делаем *повторную* установку Assignee на настоящего исполнителя
+                setTimeout(async () => {
+                    const realKey = extractRealJiraKey(combinedId);
+                    const reassignOk = await reassignIssueToRealUser(task.source, realKey, telegramUsername);
+                    if (reassignOk) {
+                        console.log(`Задача ${combinedId} (реально) переназначена на ${telegramUsername}`);
+                    }
+                }, 30_000);
+
+            } else {
+                await ctx.reply(`Не удалось перевести задачу ${combinedId} в нужный статус (updateJiraTaskStatus failed)`);
             }
         });
     } catch (error) {
         console.error('Ошибка в take_task:', error);
-        const keyboard = new InlineKeyboard()
-            .text('Подробнее', `toggle_description:${ctx.match[1]}`)
-            .url('Перейти к задаче', getTaskUrl('sxl', ctx.match[1]));
-
-        await ctx.reply('Произошла ошибка.', { reply_markup: keyboard });
+        await ctx.reply('Произошла ошибка.');
     }
 });
+
+
 
 async function updateJiraTaskStatus(source, combinedId, telegramUsername) {
     try {
