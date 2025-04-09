@@ -1020,40 +1020,53 @@ function escapeHtml(text) {
    * # item => "1) item", # another => "2) another", и т.д.
    */
   function convertHashLinesToNumbered(text) {
+    // Разбиваем по переносам строк
     let lines = text.split('\n');
     let result = [];
     let counter = 1;
   
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
+      // Убираем неразрывные пробелы \u00A0 → обычные пробелы
+      let line = lines[i].replace(/\u00A0/g, ' ');
+      let trimmed = line.trim();
   
-      // 1) Случай, когда строка == "#" или "# "
-      //    => сливаем с content из следующей строки (если есть)
-      if ((trimmed === '#' || trimmed === '# ') && i < lines.length - 1) {
-        // Следующая строка
-        const nextLine = lines[i + 1];
-        const nextTrimmed = nextLine.trim();
-        if (nextTrimmed) {
-          // Формируем "N) nextTrimmed" 
-          result.push(`${counter++}) ${nextTrimmed}`);
-        } else {
-          // Если вдруг следующая строка пустая, тоже добавим 
-          // (но будет "N) " без контента)
-          result.push(`${counter++})`);
+      // --- 1) Если строка – это просто "#" (или "# "), 
+      // ищем следующую непустую, чтобы склеить
+      if (trimmed === '#' || trimmed === '#') {
+        // Ищем следующую строку с «настоящим» текстом
+        let nextIndex = i + 1;
+        let foundText = null;
+  
+        while (nextIndex < lines.length) {
+          let candidate = lines[nextIndex].replace(/\u00A0/g, ' ').trim();
+          if (candidate) {
+            // не пустая => это наш текст
+            foundText = candidate;
+            break;
+          }
+          nextIndex++;
         }
-        // Пропускаем следующую строку, чтобы не дублировать
-        i++;
+  
+        if (foundText) {
+          // Склеиваем: "1) foundText"
+          result.push(`${counter++}) ${foundText}`);
+          // Пропускаем все эти пустые строки + саму строку с текстом
+          i = nextIndex;
+        } else {
+          // Не нашли никакого текста => просто "1)" и выходим
+          result.push(`${counter++})`);
+          // но i++ случится в конце цикла
+        }
       }
   
-      // 2) Случай, когда есть "# " в начале *одной* строки: "# Opensearch DUView..."
+      // --- 2) Если строка начинается с "# " (в одной строке вместе с текстом)
       else if (trimmed.startsWith('# ')) {
-        // Убираем "# " и подставляем счётчик
-        const content = trimmed.slice(2); // убираем "# "
+        // убираем "# "
+        const content = trimmed.slice(2);
         result.push(`${counter++}) ${content}`);
       }
   
-      // 3) Иначе оставляем без изменений
+      // --- 3) Иначе — без изменений
       else {
         result.push(line);
       }
@@ -1061,6 +1074,7 @@ function escapeHtml(text) {
   
     return result.join('\n');
   }
+  
   
   /**
    * Преобразует "|col1|col2|" в <pre>|col1|col2|</pre>.
