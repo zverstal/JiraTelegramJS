@@ -858,21 +858,24 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
           return;
         }
 
-        // Формируем новый текст сообщения, используя актуальные данные из updatedIssue
-        const newMessageText =
-          `Задача: ${combinedId}\n` +
-          `Источник: ${task.source}\n` +
-          `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
-          `Описание: ${updatedIssue.fields.summary || task.title}\n` +
-          `Приоритет: ${getPriorityEmoji(updatedIssue.fields.priority?.name || task.priority)}\n` +
-          `Тип задачи: ${updatedIssue.fields.issuetype?.name || task.issueType}\n` +
-          `Исполнитель: ${updatedIssue.fields.assignee ? getHumanReadableName(
-              updatedIssue.fields.assignee.name,
-              updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
-              task.source
-            ) : 'Никто'}\n` +
-          `Создатель задачи: ${task.reporter}\n` +
-          `Статус: ${updatedIssue.fields.status?.name || task.status}`;
+              // Формируем новый текст сообщения, используя актуальные данные из updatedIssue
+              const newMessageText =
+              `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
+              `<b>Источник:</b> ${escapeHtml(task.source)}\n` +
+              `<b>Ссылка:</b> <a href="${escapeHtml(getTaskUrl(task.source, task.id))}">Открыть в Jira</a>\n` +
+              `<b>Описание:</b> ${escapeHtml(updatedIssue.fields.summary || task.title)}\n` +
+              `<b>Приоритет:</b> ${getPriorityEmoji(updatedIssue.fields.priority?.name || task.priority)}\n` +
+              `<b>Тип задачи:</b> ${escapeHtml(updatedIssue.fields.issuetype?.name || task.issueType)}\n` +
+              `<b>Исполнитель:</b> ${updatedIssue.fields.assignee 
+                ? escapeHtml(getHumanReadableName(
+                      updatedIssue.fields.assignee.name,
+                      updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
+                      task.source
+                    ))
+                : 'Никто'}\n` +
+              `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(task.reporterLogin, task.reporter, task.source))}\n` +
+              `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || task.status)}`;
+
         
         // Если у нас сохранился message_id исходного сообщения, редактируем его
         const messageId = messageIdCache[combinedId];
