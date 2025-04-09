@@ -881,10 +881,12 @@ bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
         const messageId = messageIdCache[combinedId];
         if (messageId) {
           try {
-            await bot.api.editMessageText(process.env.ADMIN_CHAT_ID, messageId, {
-              text: newMessageText,
-              parse_mode: 'HTML'
-            });
+            await bot.api.editMessageText(
+              process.env.ADMIN_CHAT_ID,
+              messageId,
+              newMessageText,
+              { parse_mode: 'HTML' }
+            );
           } catch (errEdit) {
             console.error('Ошибка при редактировании сообщения:', errEdit);
           }
