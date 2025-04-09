@@ -652,7 +652,7 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
   }
 
-  // Извлечение необходимых полей из задачи
+  // Извлечение необходимых полей
   const priority = issue.fields.priority?.name || 'Не указан';
   const taskType = issue.fields.issuetype?.name || 'Не указан';
   const summary = issue.fields.summary || 'Без названия';
@@ -665,17 +665,18 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
 
   // Парсим комментарий (Markdown → HTML)
   let fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
-  // Если комментарий содержит синтаксис thumbnail (например, "!Снимок экрана 2024-03-21 115904.png|thumbnail!"),
-  // удаляем его (заменяем на пустую строку)
+  // Если комментарий содержит синтаксис миниатюры, удаляем его
   fullCommentHtml = fullCommentHtml.replace(/!([^!]+)\|thumbnail!/gi, '');
 
   const MAX_LEN = 300;
   const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
-  if (fullCommentHtml.length > MAX_LEN) {
+
+  // Если длина комментария превышает лимит ИЛИ если есть вложения – добавляем кнопку "Развернуть"
+  if (fullCommentHtml.length > MAX_LEN || (lastComment.attachments && lastComment.attachments.length > 0)) {
     keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
   }
 
-  // Если в комментарии есть вложения – добавляем кнопки для каждого
+  // Если в комментарии есть вложения – добавляем кнопки для каждого вложения
   if (lastComment.attachments && Array.isArray(lastComment.attachments) && lastComment.attachments.length > 0) {
     let attachmentCounter = 1;
     const currentTunnelUrl = process.env.PUBLIC_BASE_URL;
@@ -732,6 +733,7 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     parse_mode: 'HTML'
   }).catch(e => console.error('Error sending message to Telegram:', e));
 }
+
 
 
 // ----------------------------------------------------------------------------------
