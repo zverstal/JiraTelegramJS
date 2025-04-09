@@ -642,11 +642,7 @@ bot.callbackQuery('refresh_tunnel', async (ctx) => {
   }
 });
 
-
-
 async function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
-  const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
-
   const assigneeObj = issue.fields.assignee || null;
   const assigneeText = assigneeObj
     ? getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source)
@@ -666,54 +662,9 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   const commentDisplayRaw = lastComment.author?.displayName || authorName;
   const commentAuthor = getHumanReadableName(commentAuthorRaw, commentDisplayRaw, source);
 
-  let fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
-  fullCommentHtml = fullCommentHtml.replace(/!\S+?\|thumbnail!/gi, '');
-
+  let fullCommentHtml = parseCustomMarkdown(lastComment.body || '').replace(/!\S+?\|thumbnail!/gi, '');
   const MAX_LEN = 300;
   const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
-
-  // Объединяем вложения из комментария и задачи
-  const rawAttachments = [
-    ...(lastComment.attachments || []),
-    ...(issue.fields.attachment || [])
-  ];
-
-  // Фильтрация по уникальности filename
-  const seenFiles = new Set();
-  const attachments = rawAttachments.filter(att => {
-    if (!att?.filename) return false;
-    const norm = att.filename.toLowerCase();
-    if (seenFiles.has(norm)) return false;
-    seenFiles.add(norm);
-    return true;
-  });
-
-  if (fullCommentHtml.length > MAX_LEN || attachments.length > 0) {
-    keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
-  }
-
-  if (attachments.length > 0) {
-    let attachmentCounter = 1;
-    const currentTunnelUrl = process.env.PUBLIC_BASE_URL;
-    for (const att of attachments) {
-      try {
-        const fileResp = await axios.get(att.content, {
-          responseType: 'arraybuffer',
-          headers: {
-            'Authorization': `Bearer ${source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
-          }
-        });
-        const originalFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
-        const finalName = `${uuidv4()}_${originalFilename}`;
-        const filePath = path.join(ATTACHMENTS_DIR, finalName);
-        fs.writeFileSync(filePath, fileResp.data);
-        const publicUrl = `${currentTunnelUrl}/attachments/${finalName}`;
-        keyboard.row().url(`Вложение #${attachmentCounter++}`, publicUrl);
-      } catch (errAttach) {
-        console.error('Ошибка при скачивании вложения:', errAttach);
-      }
-    }
-  }
 
   const prefix = isOurComment
     ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
@@ -732,15 +683,50 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     `<b>Комментарий:</b>\n`;
 
   const cacheKey = `${combinedId}:${lastComment.id}`;
+  const attachmentButtons = [];
+
+  if (lastComment.attachments && lastComment.attachments.length > 0) {
+    const currentTunnelUrl = process.env.PUBLIC_BASE_URL;
+    let counter = 1;
+    for (const att of lastComment.attachments) {
+      try {
+        const fileResp = await axios.get(att.content, {
+          responseType: 'arraybuffer',
+          headers: {
+            'Authorization': `Bearer ${source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
+          }
+        });
+        const originalFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
+        const finalName = `${uuidv4()}_${originalFilename}`;
+        const filePath = path.join(ATTACHMENTS_DIR, finalName);
+        fs.writeFileSync(filePath, fileResp.data);
+        const publicUrl = `${currentTunnelUrl}/attachments/${finalName}`;
+        attachmentButtons.push({ label: `Вложение #${counter++}`, url: publicUrl });
+      } catch (errAttach) {
+        console.error('Ошибка при скачивании вложения:', errAttach);
+      }
+    }
+  }
+
+  // Клавиатура по умолчанию
+  const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
+  if (fullCommentHtml.length > MAX_LEN || attachmentButtons.length > 0) {
+    keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
+  }
+  for (const att of attachmentButtons) {
+    keyboard.row().url(att.label, att.url);
+  }
+
+  // Кешируем данные + вложения
   commentCache[cacheKey] = {
     header: prefix + header,
     shortHtml: shortCommentHtml,
     fullHtml: fullCommentHtml,
-    source: source
+    source: source,
+    attachments: attachmentButtons
   };
 
-  let finalText = commentCache[cacheKey].header + shortCommentHtml;
-  finalText = finalText.replace(/<span>/gi, '<tg-spoiler>').replace(/<\/span>/gi, '</tg-spoiler>');
+  const finalText = (prefix + header + shortCommentHtml).replace(/<span>/gi, '<tg-spoiler>').replace(/<\/span>/gi, '</tg-spoiler>');
 
   console.log('[DEBUG] Final message text to send:', finalText);
 
@@ -751,9 +737,6 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
 }
 
 
-// ----------------------------------------------------------------------------------
-// Callback для разворачивания/сворачивания комментария по кнопкам "Развернуть"/"Свернуть"
-// ----------------------------------------------------------------------------------
 bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
@@ -764,17 +747,29 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
     if (!data) {
       return ctx.reply('Комментарий не найден в кеше (возможно, бот был перезапущен?)');
     }
+
     const newText = data.header + data.fullHtml;
+
     const keyboard = new InlineKeyboard()
       .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
       .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
-    console.log('[DEBUG] Expand comment newText:', newText);
-    await ctx.editMessageText(newText, { parse_mode: 'HTML', reply_markup: keyboard });
+
+    // Добавляем кнопки вложений, если есть
+    (data.attachments || []).forEach(att => {
+      keyboard.row().url(att.label, att.url);
+    });
+
+    await ctx.editMessageText(newText, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    });
+
   } catch (err) {
     console.error('expand_comment error:', err);
     await ctx.reply('Ошибка при раскрытии комментария.');
   }
 });
+
 
 bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
   try {
@@ -786,17 +781,29 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
     if (!data) {
       return ctx.reply('Комментарий не найден в кеше.');
     }
+
     const newText = data.header + data.shortHtml;
+
     const keyboard = new InlineKeyboard()
       .text('Развернуть', `expand_comment:${combinedId}:${commentId}`)
       .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
-    console.log('[DEBUG] Collapse comment newText:', newText);
-    await ctx.editMessageText(newText, { parse_mode: 'HTML', reply_markup: keyboard });
+
+    // Добавляем кнопки вложений, если есть
+    (data.attachments || []).forEach(att => {
+      keyboard.row().url(att.label, att.url);
+    });
+
+    await ctx.editMessageText(newText, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    });
+
   } catch (err) {
     console.error('collapse_comment error:', err);
     await ctx.reply('Ошибка при сворачивании комментария.');
   }
 });
+
 
 // ----------------------------------------------------------------------------------
 // 7) КНОПКА "ВЗЯТЬ В РАБОТУ"
