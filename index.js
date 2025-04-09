@@ -1260,14 +1260,29 @@ function escapeHtml(text) {
 
 
   function getHumanReadableName(jiraName, displayName, source) {
-    const normalizedJiraName = jiraName.trim().toLowerCase();
+    // Приводим к нижнему регистру
+    let normalizedJiraName = jiraName.trim().toLowerCase();
+  
+    // Если в jiraName нет точки, предполагаем, что это displayName и пытаемся создать login-подобное значение
+    if (!normalizedJiraName.includes('.')) {
+      // Разбиваем displayName по пробелам
+      const parts = displayName.trim().toLowerCase().split(/\s+/);
+      if (parts.length >= 2) {
+        // Формируем логин: первая буква имени + '.' + фамилия
+        normalizedJiraName = parts[0][0] + "." + parts[parts.length - 1];
+      }
+    }
+  
+    // Ищем совпадение в нашем маппинге
     for (const [telegramUser, mapObj] of Object.entries(jiraUserMappings)) {
-        if ((mapObj[source] || "").trim().toLowerCase() === normalizedJiraName) {
-            return usernameMappings[telegramUser] || displayName;
-        }
+      const mappedLogin = (mapObj[source] || "").trim().toLowerCase();
+      if (mappedLogin === normalizedJiraName) {
+        return usernameMappings[telegramUser] || displayName;
+      }
     }
     return displayName;
-}
+  }
+  
 
 
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
@@ -1311,15 +1326,12 @@ bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
         const priorityEmoji = getPriorityEmoji(priority);
 
         // 4) Определяем исполнителя
-        // 4) Определяем исполнителя
-let assigneeText = 'Никто';
-if (assigneeObj) {
-  // Передаём оба поля: логин (assigneeObj.name) и displayName (assigneeObj.displayName)
-  const mappedName = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
-  if (mappedName) {
-    assigneeText = mappedName;
-  }
-}
+        let assigneeText = 'Никто';
+        if (assigneeObj) {
+          // Передаём и jiraName (assigneeObj.name) и displayName (assigneeObj.displayName)
+          assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
+        }
+    }
 
 
         // 5) Проверяем, свернуто ли сейчас описание или развернуто
