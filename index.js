@@ -815,7 +815,15 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
     const commentId = ctx.match[2];
     const cacheKey = `${combinedId}:${commentId}`;
 
-    let data = await refreshCommentCache(combinedId, commentId, combinedId.split('-')[0]);
+    let data;
+
+    try {
+      data = await refreshCommentCache(combinedId, commentId, combinedId.split('-')[0]);
+    } catch (refreshErr) {
+      console.error('Ошибка обновления кэша комментария:', refreshErr);
+      await ctx.reply('Комментарий был удалён или больше недоступен.');
+      return;
+    }
 
     const keyboard = new InlineKeyboard()
       .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
@@ -854,6 +862,7 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка при раскрытии комментария.');
   }
 });
+
 
 
 
