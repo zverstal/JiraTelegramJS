@@ -755,6 +755,10 @@ async function refreshCommentCache(taskId, commentId, source) {
   const issue = await getJiraTaskDetails(source, taskId);
   if (!issue) throw new Error('Не удалось загрузить актуальные данные задачи');
 
+  if (!issue.fields.comment || !issue.fields.comment.comments) {
+    throw new Error('В задаче отсутствуют комментарии');
+  }
+
   const lastComment = issue.fields.comment.comments.find(c => c.id === commentId);
   if (!lastComment) throw new Error('Комментарий не найден в задаче');
 
@@ -800,6 +804,7 @@ async function refreshCommentCache(taskId, commentId, source) {
 
   return cacheData;
 }
+
 
 
 
