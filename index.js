@@ -512,7 +512,7 @@ async function sendJiraTasks(ctx) {
         `Приоритет: ${getPriorityEmoji(task.priority)}\n` +
         `Тип задачи: ${task.issueType}\n` +
         `Исполнитель: ${task.assignee}\n` +
-        `Создатель задачи: ${task.reporter}\n` +
+        `Создатель задачи: ${getHumanReadableName(task.reporter, task.reporter, task.source)}\n` +
         `Статус: ${task.status}`;
       
       // Отправляем сообщение и сохраняем message_id
@@ -541,7 +541,7 @@ async function checkForNewComments() {
       do {
         const response = await axios.get(url, {
           headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/json' },
-          params: { jql, maxResults: 50, startAt, fields: 'comment,assignee,status,reporter,creator,summary,priority,issuetype,customfield_10500,customfield_10504'}
+          params: { jql, maxResults: 50, startAt, fields: 'comment,attachment, assignee,status,reporter,creator,summary,priority,issuetype,customfield_10500,customfield_10504'}
         });
         total = response.data.total;
         const issues = response.data.issues;
@@ -621,72 +621,92 @@ function getHumanReadableName(jiraName, displayName, source) {
  * В уведомлении также отображаются: Исполнитель, Логин исполнителя,
  * Создатель задачи, Логин создателя и Статус.
  */
-function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
-    const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
-    
-    const assigneeObj = issue.fields.assignee || null;
-    let assigneeText = 'Никто';
-    if (assigneeObj) {
-      assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
-    }
-    
-    
-    const reporterObj = issue.fields.reporter || issue.fields.creator || null;
-    let reporterText = 'Не указан';
-    let reporterLogin = 'Не указан';
-    if (reporterObj) {
-      reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
-      reporterLogin = reporterObj.name;
-    }
-    
-    // **Надо добавить следующие строки:**
-    const priority = issue.fields.priority?.name || 'Не указан';
-    const taskType = issue.fields.issuetype?.name || 'Не указан';
-    const summary = issue.fields.summary || 'Без названия';
-    const statusName = issue.fields.status?.name || 'Не указан';
-    const commentAuthor = lastComment.author?.displayName || lastComment.author?.name || authorName;
-
-    
-    const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
-    const MAX_LEN = 300;
-    const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
-    if (fullCommentHtml.length > MAX_LEN) {
-      keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
-    }
-    
-    const prefix = isOurComment
-      ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
-      : 'В задаче появился новый комментарий:\n\n';
-    
-    const header =
-      `<b>Задача:</b> ${combinedId}\n` +
-      `<b>Источник:</b> ${source}\n` +
-      `<b>Приоритет:</b> ${getPriorityEmoji(priority)}\n` +
-      `<b>Тип задачи:</b> ${escapeHtml(taskType)}\n` +
-      `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
-      `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
-      `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
-      `<b>Автор комментария:</b> ${escapeHtml(commentAuthor)}\n` +
-      `<b>Статус:</b> ${escapeHtml(statusName)}\n` +
-      `<b>Комментарий:</b>\n`;
-    
-    const cacheKey = `${combinedId}:${lastComment.id}`;
-    commentCache[cacheKey] = {
-      header: prefix + header,
-      shortHtml: shortCommentHtml,
-      fullHtml: fullCommentHtml,
-      source: source
-    };
-    
-    let finalText = commentCache[cacheKey].header + shortCommentHtml;
-    finalText = finalText.replace(/<span>/gi, '<tg-spoiler>').replace(/<\/span>/gi, '</tg-spoiler>');
-    console.log('[DEBUG] Final message text to send:', finalText);
-    
-    sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
-      reply_markup: keyboard,
-      parse_mode: 'HTML'
-    }).catch(e => console.error('Error sending message to Telegram:', e));
+async function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
+  const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
+  
+  const assigneeObj = issue.fields.assignee || null;
+  let assigneeText = 'Никто';
+  if (assigneeObj) {
+    assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
   }
+  
+  const reporterObj = issue.fields.reporter || issue.fields.creator || null;
+  let reporterText = 'Не указан';
+  if (reporterObj) {
+    reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
+  }
+  
+  // Добавляем необходимые поля
+  const priority = issue.fields.priority?.name || 'Не указан';
+  const taskType = issue.fields.issuetype?.name || 'Не указан';
+  const summary = issue.fields.summary || 'Без названия';
+  const statusName = issue.fields.status?.name || 'Не указан';
+  const commentAuthor = lastComment.author?.displayName || lastComment.author?.name || authorName;
+  
+  const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
+  const MAX_LEN = 300;
+  const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
+  if (fullCommentHtml.length > MAX_LEN) {
+    keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
+  }
+  
+  // Если в комментарии есть вложения – добавляем кнопки
+  if (lastComment.attachments && Array.isArray(lastComment.attachments) && lastComment.attachments.length > 0) {
+    let attachmentCounter = 1;
+    for (const att of lastComment.attachments) {
+      try {
+        const fileResp = await axios.get(att.content, {
+          responseType: 'arraybuffer',
+          headers: {
+            'Authorization': `Bearer ${source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
+          }
+        });
+        const originalFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
+        const finalName = `${uuidv4()}_${originalFilename}`;
+        const filePath = path.join(ATTACHMENTS_DIR, finalName);
+        fs.writeFileSync(filePath, fileResp.data);
+        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
+        keyboard.row().url(`Комментарий Вложение #${attachmentCounter++}`, publicUrl);
+      } catch (errAttach) {
+        console.error('Ошибка при скачивании вложения из комментария:', errAttach);
+      }
+    }
+  }
+  
+  const prefix = isOurComment
+    ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
+    : 'В задаче появился новый комментарий:\n\n';
+  
+  const header =
+    `<b>Задача:</b> ${combinedId}\n` +
+    `<b>Источник:</b> ${source}\n` +
+    `<b>Приоритет:</b> ${getPriorityEmoji(priority)}\n` +
+    `<b>Тип задачи:</b> ${escapeHtml(taskType)}\n` +
+    `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+    `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
+    `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
+    `<b>Автор комментария:</b> ${escapeHtml(commentAuthor)}\n` +
+    `<b>Статус:</b> ${escapeHtml(statusName)}\n` +
+    `<b>Комментарий:</b>\n`;
+  
+  const cacheKey = `${combinedId}:${lastComment.id}`;
+  commentCache[cacheKey] = {
+    header: prefix + header,
+    shortHtml: shortCommentHtml,
+    fullHtml: fullCommentHtml,
+    source: source
+  };
+  
+  let finalText = commentCache[cacheKey].header + shortCommentHtml;
+  finalText = finalText.replace(/<span>/gi, '<tg-spoiler>').replace(/<\/span>/gi, '</tg-spoiler>');
+  console.log('[DEBUG] Final message text to send:', finalText);
+  
+  sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
+    reply_markup: keyboard,
+    parse_mode: 'HTML'
+  }).catch(e => console.error('Error sending message to Telegram:', e));
+}
+
   
 
 // ----------------------------------------------------------------------------------
@@ -970,91 +990,107 @@ function formatDescriptionAsHtml(rawDescription) {
 // 8) Callback "toggle_description" для переключения описания задачи
 // ----------------------------------------------------------------------------------
 bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
-    try {
-      await ctx.answerCallbackQuery();
-      const combinedId = ctx.match[1];
-      let rowFromDb = await new Promise(resolve => {
-        db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
-      });
-      let source = rowFromDb?.source;
-      if (!source) {
-        const txt = ctx.callbackQuery.message?.text || "";
-        const match = txt.match(/Источник:\s*([^\n]+)/i);
-        if (match) {
-          source = match[1].trim();
-        } else {
-          source = combinedId.split('-')[0];
+  try {
+    await ctx.answerCallbackQuery();
+    const combinedId = ctx.match[1];
+    let rowFromDb = await new Promise(resolve => {
+      db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
+    });
+    let source = rowFromDb?.source;
+    if (!source) {
+      const txt = ctx.callbackQuery.message?.text || "";
+      const match = txt.match(/Источник:\s*([^\n]+)/i);
+      source = match ? match[1].trim() : combinedId.split('-')[0];
+    }
+    const issue = await getJiraTaskDetails(source, combinedId);
+    if (!issue) {
+      return ctx.reply('Не удалось получить данные задачи из Jira.');
+    }
+    const summary = issue.fields.summary || 'Без названия';
+    const description = issue.fields.description || 'Нет описания';
+    const statusName = issue.fields.status?.name || '—';
+    const priority = issue.fields.priority?.name || 'None';
+    const taskType = issue.fields.issuetype?.name || '—';
+    const assigneeObj = issue.fields.assignee || null;
+    const priorityEmoji = getPriorityEmoji(priority);
+    let assigneeText = 'Никто';
+    if (assigneeObj) {
+      assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
+    }
+    const reporterObj = issue.fields.reporter || null;
+    let reporterText = 'Не указан';
+    if (reporterObj) {
+      reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
+    }
+    const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
+    const isExpanded = currentText.endsWith("...");
+    const keyboard = new InlineKeyboard();
+    if ((rowFromDb?.department === "Техническая поддержка") && (statusName === "Open")) {
+      keyboard.text('Взять в работу', `take_task:${combinedId}`);
+    }
+    keyboard
+      .text(isExpanded ? 'Подробнее' : 'Скрыть', `toggle_description:${combinedId}`)
+      .url('Открыть в Jira', `https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}`);
+    
+    if (!isExpanded) {
+      const safeDesc = formatDescriptionAsHtml(description);
+      // --- Новая логика для вставки вложений ---
+      if (issue.fields.attachment && Array.isArray(issue.fields.attachment) && issue.fields.attachment.length > 0) {
+        let counter = 1;
+        for (const att of issue.fields.attachment) {
+          try {
+            const fileResp = await axios.get(att.content, {
+              responseType: 'arraybuffer',
+              headers: {
+                'Authorization': `Bearer ${source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
+              }
+            });
+            const originalFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
+            const finalName = `${uuidv4()}_${originalFilename}`;
+            const filePath = path.join(ATTACHMENTS_DIR, finalName);
+            fs.writeFileSync(filePath, fileResp.data);
+            const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
+            // Добавляем новую строку с кнопкой для вложения в клавиатуру
+            keyboard.row().url(`Вложение #${counter++}`, publicUrl);
+          } catch (errAttach) {
+            console.error('Ошибка при скачивании вложения:', errAttach);
+          }
         }
       }
-      const issue = await getJiraTaskDetails(source, combinedId);
-      if (!issue) {
-        return ctx.reply('Не удалось получить данные задачи из Jira.');
-      }
-      const summary = issue.fields.summary || 'Без названия';
-      const description = issue.fields.description || 'Нет описания';
-      const statusName = issue.fields.status?.name || '—';
-      const priority = issue.fields.priority?.name || 'None';
-      const taskType = issue.fields.issuetype?.name || '—';
-      const assigneeObj = issue.fields.assignee || null;
-      const priorityEmoji = getPriorityEmoji(priority);
-      let assigneeText = 'Никто';
-      if (assigneeObj) {
-        assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
-      }
-      // Добавляем: Создатель задачи (reporter)
-      const reporterObj = issue.fields.reporter || null;
-      let reporterText = 'Не указан';
-      let reporterLogin = 'Не указан';
-      if (reporterObj) {
-        reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
-        reporterLogin = reporterObj.name;
-      }
-      const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
-      const isExpanded = currentText.endsWith("...");
-      const keyboard = new InlineKeyboard();
-      if (rowFromDb?.department === "Техническая поддержка" && statusName === "Open") {
-        keyboard.text('Взять в работу', `take_task:${combinedId}`);
-      }
-      keyboard
-        .text(isExpanded ? 'Подробнее' : 'Скрыть', `toggle_description:${combinedId}`)
-        .url('Открыть в Jira', `https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}`);
-      if (!isExpanded) {
-        const safeDesc = formatDescriptionAsHtml(description);
-        await ctx.editMessageText(
-          `<b>Задача:</b> ${combinedId}\n` +
-          `<b>Источник:</b> ${source}\n` +
-          `<b>Приоритет:</b> ${priorityEmoji}\n` +
-          `<b>Тип задачи:</b> ${taskType}\n` +
-          `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
-          `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
-          //`<b>Логин исполнителя:</b> ${escapeHtml(assigneeObj ? assigneeObj.name : 'Не указан')}\n` +
-          `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
-          //`<b>Логин создателя:</b> ${escapeHtml(reporterLogin)}\n` +
-          `<b>Статус:</b> ${escapeHtml(statusName)}\n\n` +
-          `<b>Описание:</b>\n${safeDesc}\n\n...`,
-          { parse_mode: 'HTML', reply_markup: keyboard }
-        );
-      } else {
-        await ctx.editMessageText(
-          `<b>Задача:</b> ${combinedId}\n` +
-          `<b>Источник:</b> ${source}\n` +
-          `<b>Ссылка:</b> <a href="https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}">Открыть в Jira</a>\n` +
-          `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
-          `<b>Приоритет:</b> ${priorityEmoji}\n` +
-          `<b>Тип задачи:</b> ${taskType}\n` +
-          `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
-          //`<b>Логин исполнителя:</b> ${escapeHtml(assigneeObj ? assigneeObj.name : 'Не указан')}\n` +
-          `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
-          //`<b>Логин создателя:</b> ${escapeHtml(reporterLogin)}\n` +
-          `<b>Статус:</b> ${escapeHtml(statusName)}\n`,
-          { parse_mode: 'HTML', reply_markup: keyboard }
-        );
-      }
-    } catch (err) {
-      console.error('toggle_description error:', err);
-      await ctx.reply('Ошибка при обработке toggle_description');
+      // --- Конец новой логики ---
+      
+      await ctx.editMessageText(
+        `<b>Задача:</b> ${combinedId}\n` +
+        `<b>Источник:</b> ${source}\n` +
+        `<b>Приоритет:</b> ${priorityEmoji}\n` +
+        `<b>Тип задачи:</b> ${escapeHtml(taskType)}\n` +
+        `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+        `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
+        `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
+        `<b>Статус:</b> ${escapeHtml(statusName)}\n\n` +
+        `<b>Описание:</b>\n${safeDesc}\n\n...`,
+        { parse_mode: 'HTML', reply_markup: keyboard }
+      );
+    } else {
+      await ctx.editMessageText(
+        `<b>Задача:</b> ${combinedId}\n` +
+        `<b>Источник:</b> ${source}\n` +
+        `<b>Ссылка:</b> <a href="https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}">Открыть в Jira</a>\n` +
+        `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+        `<b>Приоритет:</b> ${priorityEmoji}\n` +
+        `<b>Тип задачи:</b> ${taskType}\n` +
+        `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
+        `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
+        `<b>Статус:</b> ${escapeHtml(statusName)}\n`,
+        { parse_mode: 'HTML', reply_markup: keyboard }
+      );
     }
-  });
+  } catch (err) {
+    console.error('toggle_description error:', err);
+    await ctx.reply('Ошибка при обработке toggle_description');
+  }
+});
+
 
 
 // ----------------------------------------------------------------------------------
