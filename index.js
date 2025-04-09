@@ -792,76 +792,73 @@ const commentCache = {};
  */
 // Функция отправки уведомления о новом комментарии
 function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
-    // Создаём клавиатуру, добавляя кнопку "Перейти к задаче"
     const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
-    
+  
+    // Определяем объект исполнителя из данных задачи
+    const assigneeObj = issue.fields.assignee || null;
+  
     // Маппинг имени автора
     let displayAuthor = authorName;
-    const mappedAuthor = getHumanReadableName(authorName, source);
+    const mappedAuthor = getHumanReadableName(authorName, issue.fields.assignee ? (issue.fields.assignee.displayName || issue.fields.assignee.name) : authorName, source);
     if (mappedAuthor) {
       displayAuthor = mappedAuthor;
     }
-    
+  
     // Получаем HTML комментария через парсер
     const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
-    
+  
     // Обрезаем HTML с помощью safeTruncateHtml, чтобы не обрезать тег посередине
-    const MAX_LEN = 300; // пороговая длина
+    const MAX_LEN = 300; // пороговая длина в символах
     const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
-    
+  
     // Если полный текст длиннее — добавляем кнопку "Развернуть"
     if (fullCommentHtml.length > MAX_LEN) {
       keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
     }
-    
+  
     // Префикс уведомления зависит от того, от технической поддержки ли комментарий
     const prefix = isOurComment
       ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
       : 'В задаче появился новый комментарий:\n\n';
-
-      
-    // Получаем значение для исполнителя с учётом displayName
-    const performer = assigneeObj
-    ? getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source)
-    : 'Не указан';
-
+  
     // Формируем заголовок уведомления
     const header =
-    `<b>Задача:</b> ${combinedId}\n` +
-    `<b>Источник:</b> ${source}\n` +
-    `<b>Отдел:</b> ${department}\n` +
-    `<b>Ссылка:</b> ${getTaskUrl(source, combinedId)}\n` +
-    `<b>Описание:</b> ${escapeHtml(issue.fields.summary || '')}\n` +
-    `<b>Приоритет:</b> ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
-    `<b>Тип задачи:</b> ${escapeHtml(issue.fields.issuetype?.name || 'Не указан')}\n` +
-    `<b>Исполнитель:</b> ${escapeHtml(performer)}\n` +
-    `<b>Автор комментария:</b> ${escapeHtml(displayAuthor)}\n` +
-    `<b>Комментарий:</b>\n`;
-
+      `<b>Задача:</b> ${combinedId}\n` +
+      `<b>Источник:</b> ${source}\n` +
+      `<b>Отдел:</b> ${department}\n` +
+      `<b>Ссылка:</b> ${getTaskUrl(source, combinedId)}\n` +
+      `<b>Описание:</b> ${escapeHtml(issue.fields.summary || '')}\n` +
+      `<b>Приоритет:</b> ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
+      `<b>Тип задачи:</b> ${escapeHtml(issue.fields.issuetype?.name || 'Не указан')}\n` +
+      `<b>Исполнитель:</b> ${escapeHtml(assigneeObj ? (assigneeObj.displayName || assigneeObj.name) : 'Не указан')}\n` +
+      `<b>Автор комментария:</b> ${escapeHtml(displayAuthor)}\n` +
+      `<b>Комментарий:</b>\n`;
+  
     // Сохраняем в кэше заголовок, варианты комментария и source для callback'ов
     const cacheKey = `${combinedId}:${lastComment.id}`;
     commentCache[cacheKey] = {
-    header: prefix + header,
-    shortHtml: shortCommentHtml,
-    fullHtml: fullCommentHtml,
-    source: source
+      header: prefix + header,
+      shortHtml: shortCommentHtml,
+      fullHtml: fullCommentHtml,
+      source: source
     };
-    
+  
     // Итоговый текст
     let finalText = commentCache[cacheKey].header + shortCommentHtml;
-    
-    // Перед отправкой заменяем все <span> на <tg-spoiler>
+  
+    // Перед отправкой заменяем все <span> на <tg-spoiler> (чтобы избежать ошибки парсинга HTML)
     finalText = finalText
       .replace(/<span>/gi, '<tg-spoiler>')
       .replace(/<\/span>/gi, '</tg-spoiler>');
-    
+  
     console.log('[DEBUG] Final message text to send:', finalText);
-    
+  
     sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
       reply_markup: keyboard,
       parse_mode: 'HTML'
     }).catch(e => console.error('Error sending message to Telegram:', e));
   }
+  
     
   // Callback для разворачивания комментария
   bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
