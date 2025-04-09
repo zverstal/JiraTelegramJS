@@ -1285,104 +1285,98 @@ function escapeHtml(text) {
   
 
 
-bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
+  bot.callbackQuery(/^toggle_description:(.+)$/, async (ctx) => {
     try {
-        await ctx.answerCallbackQuery();
-        const combinedId = ctx.match[1];  // например "betone-SUPPORT-574"
-
-        // Сначала пытаемся узнать source (sxl/betone) из локальной БД
-        let rowFromDb = await new Promise(resolve => {
-            db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
-        });
-
-        let source = rowFromDb?.source;
-        if (!source) {
-            // fallback: пробуем вытащить из текста сообщения
-            const txt = ctx.callbackQuery.message?.text || "";
-            const match = txt.match(/Источник:\s*([^\n]+)/i);
-            if (match) {
-                source = match[1].trim();
-            } else {
-                // или берём первые 4-5 символов
-                source = combinedId.split('-')[0]; // "betone" / "sxl"
-            }
-        }
-
-        // 1) Делаем запрос в Jira, чтобы получить Актуальные данные задачи
-        const issue = await getJiraTaskDetails(source, combinedId);
-        if (!issue) {
-            return ctx.reply('Не удалось получить данные задачи из Jira.');
-        }
-
-        // 2) Считываем нужные поля
-        const summary      = issue.fields.summary       || 'Без названия';
-        const description  = issue.fields.description   || 'Нет описания';
-        const statusName   = issue.fields.status?.name  || '—';
-        const priority     = issue.fields.priority?.name || 'None';
-        const taskType     = issue.fields.issuetype?.name || '—';
-        const assigneeObj  = issue.fields.assignee || null;
-        
-        // 3) Преобразуем приоритет в emoji (если надо)
-        const priorityEmoji = getPriorityEmoji(priority);
-
-        // 4) Определяем исполнителя
-        let assigneeText = 'Никто';
-        if (assigneeObj) {
-          // Передаём и jiraName (assigneeObj.name) и displayName (assigneeObj.displayName)
-          assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
-        }
-    }
-
-
-        // 5) Проверяем, свернуто ли сейчас описание или развернуто
-        const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
-        const isExpanded = currentText.endsWith("..."); 
-        // true, если сейчас уже "длинное описание" и в конце стоит "..."
-
-        // 6) Кнопки
-        const keyboard = new InlineKeyboard();
-        if (rowFromDb?.department === "Техническая поддержка" && statusName === "Open") {
-            keyboard.text('Взять в работу', `take_task:${combinedId}`);
-        }
-        keyboard
-            .text(isExpanded ? 'Подробнее' : 'Скрыть', `toggle_description:${combinedId}`)
-            .url('Открыть в Jira', `https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}`);
-
-        // 7) Формируем текст
-        if (!isExpanded) {
-            // Сейчас «коротко» — при клике делаем «подробнее» (показать описание)
-            const safeDesc = formatDescriptionAsHtml(description);
-            await ctx.editMessageText(
-                `<b>Задача:</b> ${combinedId}\n` +
-                `<b>Источник:</b> ${source}\n` +
-                `<b>Приоритет:</b> ${priorityEmoji}\n` +
-                `<b>Тип задачи:</b> ${taskType}\n` +
-                `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
-                `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
-                `<b>Статус:</b> ${escapeHtml(statusName)}\n\n` +
-                `<b>Описание:</b>\n${safeDesc}\n\n...`,
-                { parse_mode: 'HTML', reply_markup: keyboard }
-            );
+      await ctx.answerCallbackQuery();
+      const combinedId = ctx.match[1];  // например "betone-SUPPORT-574"
+  
+      // Сначала пытаемся узнать source (sxl/betone) из локальной БД
+      let rowFromDb = await new Promise(resolve => {
+        db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], (err, row) => resolve(row));
+      });
+  
+      let source = rowFromDb?.source;
+      if (!source) {
+        // fallback: пробуем вытащить из текста сообщения
+        const txt = ctx.callbackQuery.message?.text || "";
+        const match = txt.match(/Источник:\s*([^\n]+)/i);
+        if (match) {
+          source = match[1].trim();
         } else {
-            // Сейчас «подробно» — при клике сворачиваем
-            await ctx.editMessageText(
-                `<b>Задача:</b> ${combinedId}\n` +
-                `<b>Источник:</b> ${source}\n` +
-                `<b>Ссылка:</b> <a href="https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}">Открыть в Jira</a>\n` +
-                `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
-                `<b>Приоритет:</b> ${priorityEmoji}\n` +
-                `<b>Тип задачи:</b> ${taskType}\n` +
-                `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
-                `<b>Статус:</b> ${escapeHtml(statusName)}\n`,
-                { parse_mode: 'HTML', reply_markup: keyboard }
-            );
+          // или берём первые 4-5 символов
+          source = combinedId.split('-')[0]; // "betone" / "sxl"
         }
+      }
+  
+      // 1) Делаем запрос в Jira, чтобы получить актуальные данные задачи
+      const issue = await getJiraTaskDetails(source, combinedId);
+      if (!issue) {
+        return ctx.reply('Не удалось получить данные задачи из Jira.');
+      }
+  
+      // 2) Считываем нужные поля
+      const summary      = issue.fields.summary       || 'Без названия';
+      const description  = issue.fields.description   || 'Нет описания';
+      const statusName   = issue.fields.status?.name  || '—';
+      const priority     = issue.fields.priority?.name || 'None';
+      const taskType     = issue.fields.issuetype?.name || '—';
+      const assigneeObj  = issue.fields.assignee || null;
+      
+      // 3) Преобразуем приоритет в emoji (если надо)
+      const priorityEmoji = getPriorityEmoji(priority);
+  
+      // 4) Определяем исполнителя
+      let assigneeText = 'Никто';
+      if (assigneeObj) {
+        assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
+      }
+  
+      // 5) Проверяем, свернуто ли сейчас описание или развернуто
+      const currentText = ctx.callbackQuery.message?.text.trimEnd() || "";
+      const isExpanded = currentText.endsWith("...");
+  
+      // 6) Кнопки
+      const keyboard = new InlineKeyboard();
+      if (rowFromDb?.department === "Техническая поддержка" && statusName === "Open") {
+        keyboard.text('Взять в работу', `take_task:${combinedId}`);
+      }
+      keyboard
+        .text(isExpanded ? 'Подробнее' : 'Скрыть', `toggle_description:${combinedId}`)
+        .url('Открыть в Jira', `https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}`);
+  
+      // 7) Формируем текст
+      if (!isExpanded) {
+        const safeDesc = formatDescriptionAsHtml(description);
+        await ctx.editMessageText(
+          `<b>Задача:</b> ${combinedId}\n` +
+            `<b>Источник:</b> ${source}\n` +
+            `<b>Приоритет:</b> ${priorityEmoji}\n` +
+            `<b>Тип задачи:</b> ${taskType}\n` +
+            `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+            `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
+            `<b>Статус:</b> ${escapeHtml(statusName)}\n\n` +
+            `<b>Описание:</b>\n${safeDesc}\n\n...`,
+          { parse_mode: 'HTML', reply_markup: keyboard }
+        );
+      } else {
+        await ctx.editMessageText(
+          `<b>Задача:</b> ${combinedId}\n` +
+            `<b>Источник:</b> ${source}\n` +
+            `<b>Ссылка:</b> <a href="https://jira.${source}.team/browse/${extractRealJiraKey(combinedId)}">Открыть в Jira</a>\n` +
+            `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+            `<b>Приоритет:</b> ${priorityEmoji}\n` +
+            `<b>Тип задачи:</b> ${taskType}\n` +
+            `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
+            `<b>Статус:</b> ${escapeHtml(statusName)}\n`,
+          { parse_mode: 'HTML', reply_markup: keyboard }
+        );
+      }
     } catch (err) {
-        console.error('toggle_description error:', err);
-        await ctx.reply('Ошибка при обработке toggle_description');
+      console.error('toggle_description error:', err);
+      await ctx.reply('Ошибка при обработке toggle_description');
     }
-});
-
+  });
+  
 
 // ----------------------------------------------------------------------------------
 // 9) ГЕНЕРАЦИЯ СООБЩЕНИЙ НА 10:00 И 21:00, И ЛОГИКА ПЕРЕКЛЮЧЕНИЯ МЕСЯЦЕВ
