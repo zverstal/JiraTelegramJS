@@ -908,96 +908,136 @@ async function reassignIssueToRealUser(source, realJiraKey, telegramUsername) {
   }
 }
 
+
+bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
+  try {
+    await ctx.answerCallbackQuery('🔄 Обновляем данные задачи...');
+    const combinedId = ctx.match[1];
+
+    db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], async (err, task) => {
+      if (err || !task) {
+        console.error('Ошибка получения задачи из БД:', err || 'задача не найдена');
+        return ctx.reply('Задача не найдена.');
+      }
+
+      const updatedIssue = await getJiraTaskDetails(task.source, combinedId);
+      if (!updatedIssue) {
+        return ctx.reply('Не удалось получить данные из Jira.');
+      }
+
+      const updatedText =
+        `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
+        `<b>Источник:</b> ${escapeHtml(task.source)}\n` +
+        `<b>Ссылка:</b> <a href="${escapeHtml(getTaskUrl(task.source, task.id))}">Открыть в Jira</a>\n` +
+        `<b>Описание:</b> ${escapeHtml(updatedIssue.fields.summary || task.title)}\n` +
+        `<b>Приоритет:</b> ${getPriorityEmoji(updatedIssue.fields.priority?.name || task.priority)}\n` +
+        `<b>Тип задачи:</b> ${escapeHtml(updatedIssue.fields.issuetype?.name || task.issueType)}\n` +
+        `<b>Исполнитель:</b> ${updatedIssue.fields.assignee 
+          ? escapeHtml(getHumanReadableName(
+              updatedIssue.fields.assignee.name,
+              updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
+              task.source
+            ))
+          : 'Никто'}\n` +
+        `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(task.reporterLogin, task.reporter, task.source))}\n` +
+        `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || task.status)}`;
+
+      const keyboard = new InlineKeyboard()
+        .text('🔄 Обновить данные', `refresh_task:${combinedId}`)
+        .url('Открыть в Jira', getTaskUrl(task.source, task.id));
+
+      await ctx.editMessageText(updatedText, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard
+      });
+    });
+  } catch (err) {
+    console.error('refresh_task error:', err);
+    await ctx.reply('Ошибка обновления задачи.');
+  }
+});
+
+
+
 bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
     const combinedId = ctx.match[1];
     const telegramUsername = ctx.from.username;
-    
+
     db.get('SELECT * FROM tasks WHERE id = ?', [combinedId], async (err, task) => {
-      if (err) {
-        console.error('Ошибка при получении задачи:', err);
-        return ctx.reply('Произошла ошибка при получении задачи.');
+      if (err || !task) {
+        console.error('Ошибка при получении задачи:', err || 'задача не найдена');
+        return ctx.reply('Задача не найдена или ошибка БД.');
       }
-      if (!task) return ctx.reply('Задача не найдена в БД.');
       if (task.department !== "Техническая поддержка") {
-        return ctx.reply('Эта задача не для ТП; нельзя взять в работу через бота.');
+        return ctx.reply('Эту задачу нельзя взять через бота.');
       }
-      
-      let success = false;
-      try {
-        success = await updateJiraTaskStatus(task.source, combinedId, telegramUsername);
-      } catch (errUpd) {
-        console.error('Ошибка updateJiraTaskStatus:', errUpd);
+
+      const success = await updateJiraTaskStatus(task.source, combinedId, telegramUsername);
+      if (!success) {
+        return ctx.reply(`Не удалось перевести задачу ${combinedId} в нужный статус.`);
       }
-      
-      if (success) {
-        db.run(
-          `INSERT INTO user_actions (username, taskId, action, timestamp)
-           VALUES (?, ?, ?, ?)`,
-          [telegramUsername, combinedId, 'take_task', getMoscowTimestamp()]
+
+      db.run(
+        `INSERT INTO user_actions (username, taskId, action, timestamp)
+         VALUES (?, ?, ?, ?)`,
+        [telegramUsername, combinedId, 'take_task', getMoscowTimestamp()]
+      );
+
+      const displayName = usernameMappings[telegramUsername] || telegramUsername;
+      await ctx.reply(`✅ Задачу ${combinedId} взял в работу: ${displayName}.`);
+
+      const updatedIssue = await getJiraTaskDetails(task.source, combinedId);
+      if (!updatedIssue) {
+        return console.error('Не удалось получить данные из Jira.');
+      }
+
+      const newMessageText = 
+        `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
+        `<b>Источник:</b> ${escapeHtml(task.source)}\n` +
+        `<b>Ссылка:</b> <a href="${escapeHtml(getTaskUrl(task.source, task.id))}">Открыть в Jira</a>\n` +
+        `<b>Описание:</b> ${escapeHtml(updatedIssue.fields.summary || task.title)}\n` +
+        `<b>Приоритет:</b> ${getPriorityEmoji(updatedIssue.fields.priority?.name || task.priority)}\n` +
+        `<b>Тип задачи:</b> ${escapeHtml(updatedIssue.fields.issuetype?.name || task.issueType)}\n` +
+        `<b>Исполнитель:</b> ${updatedIssue.fields.assignee 
+          ? escapeHtml(getHumanReadableName(
+              updatedIssue.fields.assignee.name,
+              updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
+              task.source
+            ))
+          : 'Никто'}\n` +
+        `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(task.reporterLogin, task.reporter, task.source))}\n` +
+        `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || task.status)}`;
+
+      // Добавляем кнопку обновления данных и перехода к задаче
+      const keyboard = new InlineKeyboard()
+        .text('🔄 Обновить данные', `refresh_task:${combinedId}`)
+        .url('Открыть в Jira', getTaskUrl(task.source, task.id));
+
+      // Обновляем исходное сообщение
+      const messageId = messageIdCache[combinedId];
+      if (messageId) {
+        await bot.api.editMessageText(
+          process.env.ADMIN_CHAT_ID,
+          messageId,
+          newMessageText,
+          { parse_mode: 'HTML', reply_markup: keyboard }
         );
-        const displayName = usernameMappings[telegramUsername] || telegramUsername;
-        await ctx.reply(`OK, задачу ${combinedId} взял в работу: ${displayName}.`);
-        
-        // Получаем обновлённые данные задачи из Jira
-        const updatedIssue = await getJiraTaskDetails(task.source, combinedId);
-        if (!updatedIssue) {
-          console.error('Не удалось получить обновленные данные из Jira.');
-          return;
-        }
-
-              // Формируем новый текст сообщения, используя актуальные данные из updatedIssue
-              const newMessageText =
-              `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
-              `<b>Источник:</b> ${escapeHtml(task.source)}\n` +
-              `<b>Ссылка:</b> <a href="${escapeHtml(getTaskUrl(task.source, task.id))}">Открыть в Jira</a>\n` +
-              `<b>Описание:</b> ${escapeHtml(updatedIssue.fields.summary || task.title)}\n` +
-              `<b>Приоритет:</b> ${getPriorityEmoji(updatedIssue.fields.priority?.name || task.priority)}\n` +
-              `<b>Тип задачи:</b> ${escapeHtml(updatedIssue.fields.issuetype?.name || task.issueType)}\n` +
-              `<b>Исполнитель:</b> ${updatedIssue.fields.assignee 
-                ? escapeHtml(getHumanReadableName(
-                      updatedIssue.fields.assignee.name,
-                      updatedIssue.fields.assignee.displayName || updatedIssue.fields.assignee.name,
-                      task.source
-                    ))
-                : 'Никто'}\n` +
-              `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(task.reporterLogin, task.reporter, task.source))}\n` +
-              `<b>Статус:</b> ${escapeHtml(updatedIssue.fields.status?.name || task.status)}`;
-
-        
-        // Если у нас сохранился message_id исходного сообщения, редактируем его
-        const messageId = messageIdCache[combinedId];
-        if (messageId) {
-          try {
-            await bot.api.editMessageText(
-              process.env.ADMIN_CHAT_ID,
-              messageId,
-              newMessageText,
-              { parse_mode: 'HTML' }
-            );
-          } catch (errEdit) {
-            console.error('Ошибка при редактировании сообщения:', errEdit);
-          }
-        }
-        
-        // Дополнительно, можно вызвать reassignIssueToRealUser через 30 сек, как раньше
-        setTimeout(async () => {
-          const realKey = extractRealJiraKey(combinedId);
-          const reassignOk = await reassignIssueToRealUser(task.source, realKey, telegramUsername);
-          if (reassignOk) {
-            console.log(`Задача ${combinedId} (реально) переназначена на ${telegramUsername}`);
-          }
-        }, 30000);
-      } else {
-        await ctx.reply(`Не удалось перевести задачу ${combinedId} в нужный статус (updateJiraTaskStatus failed)`);
       }
+
+      // Переназначаем исполнителя через 30 секунд
+      setTimeout(async () => {
+        const realKey = extractRealJiraKey(combinedId);
+        await reassignIssueToRealUser(task.source, realKey, telegramUsername);
+      }, 30000);
     });
   } catch (error) {
     console.error('Ошибка в take_task:', error);
     await ctx.reply('Произошла ошибка.');
   }
 });
+
 
 
 
