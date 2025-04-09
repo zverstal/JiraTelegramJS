@@ -664,26 +664,34 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
   const commentDisplayRaw = lastComment.author?.displayName || authorName;
   const commentAuthor = getHumanReadableName(commentAuthorRaw, commentDisplayRaw, source);
 
-  // Чистим thumbnail-ссылки и парсим Markdown → HTML
+  // Парсим комментарий (Markdown → HTML) и удаляем !файл|thumbnail!
   let fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
   fullCommentHtml = fullCommentHtml.replace(/!\S+?\|thumbnail!/gi, '');
 
   const MAX_LEN = 300;
   const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
 
-  // Добавляем кнопку "Развернуть", если длинный текст или есть вложения
-  const hasAttachments = Array.isArray(lastComment.attachments) && lastComment.attachments.length > 0;
-  if (fullCommentHtml.length > MAX_LEN || hasAttachments) {
+  // Только вложения из комментария
+  const rawAttachments = lastComment.attachments || [];
+  const seenFiles = new Set();
+  const attachments = rawAttachments.filter(att => {
+    if (!att?.filename) return false;
+    const norm = att.filename.toLowerCase();
+    if (seenFiles.has(norm)) return false;
+    seenFiles.add(norm);
+    return true;
+  });
+
+  // Добавляем кнопку "Развернуть", если длинный комментарий или есть вложения
+  if (fullCommentHtml.length > MAX_LEN || attachments.length > 0) {
     keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
   }
 
-  // Загружаем вложения из комментария
-  const attachmentButtons = [];
-  if (hasAttachments) {
+  // Добавляем кнопки на вложения из комментария
+  if (attachments.length > 0) {
     let attachmentCounter = 1;
     const currentTunnelUrl = process.env.PUBLIC_BASE_URL;
-
-    for (const att of lastComment.attachments) {
+    for (const att of attachments) {
       try {
         const fileResp = await axios.get(att.content, {
           responseType: 'arraybuffer',
@@ -691,17 +699,12 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
             'Authorization': `Bearer ${source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE}`
           }
         });
-
         const originalFilename = att.filename.replace(/[^\w.\-]/g, '_').substring(0, 100);
         const finalName = `${uuidv4()}_${originalFilename}`;
         const filePath = path.join(ATTACHMENTS_DIR, finalName);
         fs.writeFileSync(filePath, fileResp.data);
         const publicUrl = `${currentTunnelUrl}/attachments/${finalName}`;
-
-        // Для развернутой версии
-        attachmentButtons.push({ label: `Вложение #${attachmentCounter++}`, url: publicUrl });
-
-        // В свернутую сразу не добавляем
+        keyboard.row().url(`Вложение #${attachmentCounter++}`, publicUrl);
       } catch (errAttach) {
         console.error('Ошибка при скачивании вложения из комментария:', errAttach);
       }
@@ -713,8 +716,8 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     : 'В задаче появился новый комментарий:\n\n';
 
   const header =
-    `<b>Задача:</b> ${escapeHtml(combinedId)}\n` +
-    `<b>Источник:</b> ${escapeHtml(source)}\n` +
+    `<b>Задача:</b> ${combinedId}\n` +
+    `<b>Источник:</b> ${source}\n` +
     `<b>Приоритет:</b> ${getPriorityEmoji(priority)}\n` +
     `<b>Тип задачи:</b> ${escapeHtml(taskType)}\n` +
     `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
@@ -729,8 +732,7 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     header: prefix + header,
     shortHtml: shortCommentHtml,
     fullHtml: fullCommentHtml,
-    source: source,
-    attachments: attachmentButtons
+    source: source
   };
 
   let finalText = commentCache[cacheKey].header + shortCommentHtml;
@@ -738,11 +740,12 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
 
   console.log('[DEBUG] Final message text to send:', finalText);
 
-  await sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
+  sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
     reply_markup: keyboard,
     parse_mode: 'HTML'
-  });
+  }).catch(e => console.error('Error sending message to Telegram:', e));
 }
+
 
 
 bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
