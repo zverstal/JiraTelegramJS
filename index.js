@@ -920,6 +920,11 @@ async function reassignIssueToRealUser(source, realJiraKey, telegramUsername) {
   }
 }
 
+function addInvisibleNoise(text) {
+  const invisibleChars = ['\u200B', '\u200C', '\u200D', '\u2060', '\u2061', '\u2062'];
+  const randomChar = invisibleChars[Math.floor(Math.random() * invisibleChars.length)];
+  return text + randomChar;
+}
 
 bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
   try {
@@ -969,19 +974,9 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
       .text('🔄 Обновить данные', `refresh_task:${combinedId}`)
       .url('Открыть в Jira', getTaskUrl(source, combinedId));
 
-    // Текущий текст и клавиатура
-    const currentText = (ctx.callbackQuery.message?.text ?? "").trim().replace(/\u2063/g, '');
-    const newText = updatedText.trim().replace(/\u2063/g, '');
-    const currentMarkup = JSON.stringify(ctx.callbackQuery.message?.reply_markup?.inline_keyboard || []);
-    const newMarkup = JSON.stringify(keyboard.inline_keyboard);
+    const finalText = addInvisibleNoise(updatedText); // ← добавляем "невидимый шум"
 
-    if (currentText === newText && currentMarkup === newMarkup) {
-      console.log('[refresh_task] Ничего не изменилось, не редактируем');
-      return;
-    }
-
-    // Добавляем невидимый символ для "форса"
-    await ctx.editMessageText(updatedText + '\u2063', {
+    await ctx.editMessageText(finalText, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
@@ -991,11 +986,6 @@ bot.callbackQuery(/^refresh_task:(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка обновления задачи.');
   }
 });
-
-
-
-
-
 
 bot.callbackQuery(/^take_task:(.+)$/, async (ctx) => {
   try {
