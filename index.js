@@ -791,6 +791,7 @@ const commentCache = {};
  * Отправляет уведомление о новом комментарии.
  */
 function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
+  // Кнопка "Перейти к задаче"
   const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
 
   // Преобразуем имя автора через маппинг
@@ -813,35 +814,38 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
     // Добавляем кнопку "Развернуть"
     keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
   }
-
-  // Выбираем префикс (если комментарий от ТП – особый префикс)
+  
+  // Префикс для комментария (с указанием, что комментарий от техподдержки, если isOurComment true)
   const prefix = isOurComment
     ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
     : 'В задаче появился новый комментарий:\n\n';
-
+  
   // Формируем «заголовок» уведомления (до блока "Комментарий:")
-  const header = 
-      `<b>Задача:</b> ${combinedId}\n` +
-      `<b>Источник:</b> ${source}\n` +
-      `<b>Отдел:</b> ${department}\n` +
-      `<b>Ссылка:</b> ${getTaskUrl(source, combinedId)}\n` +
-      `<b>Описание:</b> ${issue.fields.summary}\n` +
-      `<b>Приоритет:</b> ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
-      `<b>Тип задачи:</b> ${issue.fields.issuetype?.name || 'Не указан'}\n` +
-      `<b>Исполнитель:</b> ${issue.fields.assignee?.displayName || 'Не указан'}\n` +
-      `<b>Автор комментария:</b> ${displayAuthor}\n` +
-      `<b>Комментарий:</b>\n`;
+  const header =
+    `<b>Задача:</b> ${combinedId}\n` +
+    `<b>Источник:</b> ${source}\n` +
+    `<b>Отдел:</b> ${department}\n` +
+    `<b>Ссылка:</b> ${getTaskUrl(source, combinedId)}\n` +
+    `<b>Описание:</b> ${escapeHtml(issue.fields.summary || '')}\n` +
+    `<b>Приоритет:</b> ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
+    `<b>Тип задачи:</b> ${escapeHtml(issue.fields.issuetype?.name || 'Не указан')}\n` +
+    `<b>Исполнитель:</b> ${escapeHtml(issue.fields.assignee?.displayName || 'Не указан')}\n` +
+    `<b>Автор комментария:</b> ${escapeHtml(displayAuthor)}\n` +
+    `<b>Комментарий:</b>\n`;
 
-  // Сохраняем header, оба варианта комментария и source в кэш под ключом "combinedId:lastComment.id"
+  // Сохраняем в кэше header, оба варианта комментария и source
   const cacheKey = `${combinedId}:${lastComment.id}`;
   commentCache[cacheKey] = {
-    header: header,
+    header: prefix + header, // добавляем префикс к заголовку
     shortHtml: shortCommentHtml,
     fullHtml: fullCommentHtml,
     source: source
   };
 
-  const finalText = header + shortCommentHtml;
+  const finalText = commentCache[cacheKey].header + shortCommentHtml;
+
+  // (Опционально: выведите finalText в лог для отладки)
+  console.log('[DEBUG] Final message text to send:', finalText);
 
   sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
     reply_markup: keyboard,
@@ -850,25 +854,28 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
 }
 
 
-// Callback для разворота комментария
+// Callback для разворачивания комментария
 bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
-    const combinedId = ctx.match[1];  // ID задачи
-    const commentId = ctx.match[2];   // ID комментария
+    const combinedId = ctx.match[1];
+    const commentId = ctx.match[2];
     const cacheKey = `${combinedId}:${commentId}`;
-
+  
     const data = commentCache[cacheKey];
     if (!data) {
       return ctx.reply('Комментарий не найден в кеше (возможно, бот был перезапущен?)');
     }
-
+  
     // Формируем новый текст: header + полный комментарий
     const newText = data.header + data.fullHtml;
     const keyboard = new InlineKeyboard()
       .text('Свернуть', `collapse_comment:${combinedId}:${commentId}`)
       .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
-
+  
+    // Выводим новый текст (опционально добавьте лог)
+    console.log('[DEBUG] Expand comment newText:', newText);
+  
     await ctx.editMessageText(newText, {
       parse_mode: 'HTML',
       reply_markup: keyboard
@@ -878,8 +885,7 @@ bot.callbackQuery(/^expand_comment:(.+):(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка при раскрытии комментария.');
   }
 });
-
-
+  
 // Callback для сворачивания комментария
 bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
   try {
@@ -887,18 +893,20 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
     const combinedId = ctx.match[1];
     const commentId = ctx.match[2];
     const cacheKey = `${combinedId}:${commentId}`;
-
+  
     const data = commentCache[cacheKey];
     if (!data) {
       return ctx.reply('Комментарий не найден в кеше.');
     }
-
+  
     // Формируем новый текст: header + короткий комментарий
     const newText = data.header + data.shortHtml;
     const keyboard = new InlineKeyboard()
       .text('Развернуть', `expand_comment:${combinedId}:${commentId}`)
       .url('Перейти к задаче', getTaskUrl(data.source, combinedId));
-
+  
+    console.log('[DEBUG] Collapse comment newText:', newText);
+  
     await ctx.editMessageText(newText, {
       parse_mode: 'HTML',
       reply_markup: keyboard
@@ -908,6 +916,7 @@ bot.callbackQuery(/^collapse_comment:(.+):(.+)$/, async (ctx) => {
     await ctx.reply('Ошибка при сворачивании комментария.');
   }
 });
+
   
 
 // ----------------------------------------------------------------------------------
@@ -1233,20 +1242,16 @@ function escapeHtml(text) {
   // bot.api.sendMessage(chatId, html, { parse_mode: "HTML" });
 
 
-function getHumanReadableName(jiraName, source) {
-    // Если неизвестно или пусто
+  function getHumanReadableName(jiraName, source) {
     if (!jiraName || !source) return null;
-
-    // Ищем, соответствует ли jiraName одному из наших
+    // Приводим значение к нижнему регистру и обрезаем пробелы
+    const normalizedJiraName = jiraName.trim().toLowerCase();
     for (const [telegramUser, mapObj] of Object.entries(jiraUserMappings)) {
-        // mapObj[source] = "d.baratov" (пример)
-        if (mapObj[source] === jiraName) {
-            // Нашли соответствие => берём ФИО
+        // Приводим также ключ для сравнения
+        if ((mapObj[source] || "").trim().toLowerCase() === normalizedJiraName) {
             return usernameMappings[telegramUser] || jiraName;
         }
     }
-
-    // Если не нашли, вернём null (или сам jiraName)
     return null;
 }
 
