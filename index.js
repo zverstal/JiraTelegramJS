@@ -491,8 +491,10 @@ async function sendJiraTasks(ctx) {
   `;
   db.all(query, [], async (err, rows) => {
     if (err) { console.error('Error fetching tasks:', err); return; }
+
     for (const task of rows) {
       const keyboard = new InlineKeyboard();
+
       if (task.department === "Техническая поддержка") {
         keyboard
           .text('Взять в работу', `take_task:${task.id}`)
@@ -503,22 +505,29 @@ async function sendJiraTasks(ctx) {
           .url('Перейти к задаче', getTaskUrl(task.source, task.id))
           .text('⬇ Подробнее', `toggle_description:${task.id}`);
       }
-      
+
+      // Экранированный текст сообщения
       const messageText =
-        `Задача: ${task.id}\n` +
-        `Источник: ${task.source}\n` +
-        `Ссылка: ${getTaskUrl(task.source, task.id)}\n` +
-        `Описание: ${task.title}\n` +
-        `Приоритет: ${getPriorityEmoji(task.priority)}\n` +
-        `Тип задачи: ${task.issueType}\n` +
-        `Исполнитель: ${task.assignee}\n` +
-        `Создатель задачи: ${getHumanReadableName(task.reporter, task.reporter, task.source)}\n` +
-        `Статус: ${task.status}`;
-      
-      // Отправляем сообщение и сохраняем message_id
-      const sentMessage = await ctx.reply(messageText, { reply_markup: keyboard });
+        `<b>Задача:</b> ${escapeHtml(task.id)}\n` +
+        `<b>Источник:</b> ${escapeHtml(task.source)}\n` +
+        `<b>Ссылка:</b> <a href="${escapeHtml(getTaskUrl(task.source, task.id))}">Открыть в Jira</a>\n` +
+        `<b>Описание:</b> ${escapeHtml(task.title)}\n` +
+        `<b>Приоритет:</b> ${getPriorityEmoji(task.priority)}\n` +
+        `<b>Тип задачи:</b> ${escapeHtml(task.issueType)}\n` +
+        `<b>Исполнитель:</b> ${escapeHtml(task.assignee)}\n` +
+        `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(task.reporterLogin, task.reporter, task.source))}\n` +
+        `<b>Статус:</b> ${escapeHtml(task.status)}`;
+
+      // Отправляем сообщение с HTML-разметкой
+      const sentMessage = await ctx.reply(messageText, { 
+        reply_markup: keyboard,
+        parse_mode: "HTML"
+      });
+
+      // Сохраняем message_id
       messageIdCache[task.id] = sentMessage.message_id;
-      
+
+      // Обновляем в базе lastSent
       const moscowTimestamp = getMoscowTimestamp();
       db.run('UPDATE tasks SET lastSent = ? WHERE id = ?', [moscowTimestamp, task.id]);
     }
