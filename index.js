@@ -785,17 +785,44 @@ const sendMessageWithLimiter = limiter.wrap(async (chatId, text, opts) => {
     await bot.api.sendMessage(chatId, text, opts);
 });
 
+const commentCache = {};
+
 function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
     const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
 
+    // Преобразуем имя автора
     let displayAuthor = authorName;
     const mappedAuthor = getHumanReadableName(authorName, source);
     if (mappedAuthor) {
         displayAuthor = mappedAuthor;
     }
 
-    // Парсим текст комментария
-    const commentHtml = parseCustomMarkdown(lastComment.body || '');
+    // Парсим текст комментария в HTML
+    const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
+
+    // Ключ для хранения кэша (уникальный)
+    const cacheKey = `${combinedId}:${lastComment.id}`;
+
+    // Решаем, обрезать ли
+    const MAX_LEN = 300; // порог в символах (пример)
+    let shortCommentHtml = fullCommentHtml;
+    let isTruncated = false;
+
+    if (fullCommentHtml.length > MAX_LEN) {
+        shortCommentHtml = fullCommentHtml.slice(0, MAX_LEN) + '...';
+        isTruncated = true;
+    }
+
+    // Сохраним и короткий, и полный вариант в кэш
+    commentCache[cacheKey] = {
+        shortHtml: shortCommentHtml,
+        fullHtml: fullCommentHtml
+    };
+
+    // Если обрезали, добавим кнопку «Развернуть комментарий»
+    if (isTruncated) {
+        keyboard.text('Развернуть', `expand_comment:${cacheKey}`);
+    }
 
     const prefix = isOurComment
         ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
@@ -811,14 +838,86 @@ function sendTelegramMessage(combinedId, source, issue, lastComment, authorName,
         `Приоритет: ${getPriorityEmoji(issue.fields.priority?.name || 'Не указан')}\n` +
         `Тип задачи: ${issue.fields.issuetype?.name || 'Не указан'}\n` +
         `Исполнитель: ${issue.fields.assignee?.displayName || 'Не указан'}\n` +
-        `Автор комментария: ${displayAuthor}\n` +  // <-- вместо "author"
-        `Комментарий:\n${commentHtml}`;
+        `Автор комментария: ${displayAuthor}\n` +
+        `Комментарий:\n${shortCommentHtml}`;
 
     sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, msg, {
         reply_markup: keyboard,
         parse_mode: 'HTML'
     }).catch(e => console.error('Error sending message to Telegram:', e));
 }
+
+
+bot.callbackQuery(/^expand_comment:(.+)$/, async (ctx) => {
+    try {
+        await ctx.answerCallbackQuery();
+        const cacheKey = ctx.match[1]; // например "betone-SUPPORT-574:12345"
+
+        const data = commentCache[cacheKey];
+        if (!data) {
+            return ctx.reply('Комментарий не найден в кеше (возможно, бот был перезапущен?).');
+        }
+
+        // Уже сохранён полный и короткий текст
+        const fullHtml = data.fullHtml;
+        const shortHtml = data.shortHtml;
+
+        // Заменим в сообщении короткий вариант -> полный
+        // И дадим кнопку «Свернуть комментарий»
+        const keyboard = new InlineKeyboard().text('Свернуть', `collapse_comment:${cacheKey}`);
+
+        // Текущий текст сообщения
+        const oldMessageText = ctx.callbackQuery.message?.text || "";
+
+        // Меняем только блок «Комментарий:\n...»
+        // Проще: просто перепишем всё
+        // Но, если хотим сохранить остальную часть — нужно её "вырезать".
+        // Для простоты: oldMessageText без последней строки + fullHtml
+        // Или, ещё проще, храним весь "заголовок" тоже в кеше.
+
+        // Допустим, мы просто заменим:
+        const newText = oldMessageText.replace(shortHtml, fullHtml);
+
+        await ctx.editMessageText(newText, {
+            parse_mode: 'HTML',
+            reply_markup: keyboard
+        });
+    } catch (err) {
+        console.error('expand_comment error:', err);
+        await ctx.reply('Ошибка при раскрытии комментария.');
+    }
+});
+
+bot.callbackQuery(/^collapse_comment:(.+)$/, async (ctx) => {
+    try {
+        await ctx.answerCallbackQuery();
+        const cacheKey = ctx.match[1];
+
+        const data = commentCache[cacheKey];
+        if (!data) {
+            return ctx.reply('Комментарий не найден в кеше.');
+        }
+        const fullHtml = data.fullHtml;
+        const shortHtml = data.shortHtml;
+
+        // Возвращаем «короткий»
+        const keyboard = new InlineKeyboard().text('Развернуть', `expand_comment:${cacheKey}`);
+
+        const oldMessageText = ctx.callbackQuery.message?.text || "";
+
+        // Меняем обратно fullHtml -> shortHtml
+        const newText = oldMessageText.replace(fullHtml, shortHtml);
+
+        await ctx.editMessageText(newText, {
+            parse_mode: 'HTML',
+            reply_markup: keyboard
+        });
+    } catch (err) {
+        console.error('collapse_comment error:', err);
+        await ctx.reply('Ошибка при сворачивании комментария.');
+    }
+});
+
 
 
 // ----------------------------------------------------------------------------------
