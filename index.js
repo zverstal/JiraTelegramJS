@@ -621,41 +621,63 @@ function getHumanReadableName(jiraName, displayName, source) {
  * В уведомлении также отображаются: Исполнитель, Логин исполнителя,
  * Создатель задачи, Логин создателя и Статус.
  */
+
+bot.callbackQuery('refresh_tunnel', async (ctx) => {
+  try {
+    await ctx.answerCallbackQuery();
+    const currentTunnel = process.env.PUBLIC_BASE_URL || 'Ссылка не установлена';
+    await ctx.reply(`🔄 Актуальный URL туннеля:\n${currentTunnel}`);
+  } catch (error) {
+    console.error('Ошибка при обновлении туннеля:', error);
+    await ctx.reply('Не удалось получить актуальный URL туннеля.');
+  }
+});
+
+
+
 async function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
   const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
-  
+
+  // Маппинг исполнителя
   const assigneeObj = issue.fields.assignee || null;
   let assigneeText = 'Никто';
   if (assigneeObj) {
     assigneeText = getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source);
   }
-  
+
+  // Маппинг создателя задачи
   const reporterObj = issue.fields.reporter || issue.fields.creator || null;
   let reporterText = 'Не указан';
   if (reporterObj) {
     reporterText = getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source);
   }
-  
-  // Добавляем необходимые поля
+
+  // Извлечение необходимых полей
   const priority = issue.fields.priority?.name || 'Не указан';
   const taskType = issue.fields.issuetype?.name || 'Не указан';
   const summary = issue.fields.summary || 'Без названия';
   const statusName = issue.fields.status?.name || 'Не указан';
-  const commentAuthorRaw = lastComment.author?.name || authorName;
-  const commentAuthorDisplay = lastComment.author?.displayName || commentAuthorRaw;
-  const commentAuthor = getHumanReadableName(commentAuthorRaw, commentAuthorDisplay, source);
 
-  
-  const fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
+  // Обработка автора комментария с маппингом
+  const commentAuthorRaw = lastComment.author?.name || authorName;
+  const commentDisplayRaw = lastComment.author?.displayName || authorName;
+  const commentAuthor = getHumanReadableName(commentAuthorRaw, commentDisplayRaw, source);
+
+  // Парсим комментарий (Markdown → HTML)
+  let fullCommentHtml = parseCustomMarkdown(lastComment.body || '');
+  // Если комментарий содержит синтаксис миниатюры, превращаем его в пустую строку
+  fullCommentHtml = fullCommentHtml.replace(/!\S+\|thumbnail!/, '');
+
   const MAX_LEN = 300;
   const shortCommentHtml = safeTruncateHtml(fullCommentHtml, MAX_LEN);
   if (fullCommentHtml.length > MAX_LEN) {
     keyboard.text('Развернуть', `expand_comment:${combinedId}:${lastComment.id}`);
   }
-  
-  // Если в комментарии есть вложения – добавляем кнопки
+
+  // Если в комментарии есть вложения – добавляем кнопки для каждого
   if (lastComment.attachments && Array.isArray(lastComment.attachments) && lastComment.attachments.length > 0) {
     let attachmentCounter = 1;
+    const currentTunnelUrl = process.env.PUBLIC_BASE_URL;
     for (const att of lastComment.attachments) {
       try {
         const fileResp = await axios.get(att.content, {
@@ -668,18 +690,18 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
         const finalName = `${uuidv4()}_${originalFilename}`;
         const filePath = path.join(ATTACHMENTS_DIR, finalName);
         fs.writeFileSync(filePath, fileResp.data);
-        const publicUrl = `${process.env.PUBLIC_BASE_URL}/attachments/${finalName}`;
-        keyboard.row().url(`Комментарий Вложение #${attachmentCounter++}`, publicUrl);
+        const publicUrl = `${currentTunnelUrl}/attachments/${finalName}`;
+        keyboard.row().url(`Вложение #${attachmentCounter++}`, publicUrl);
       } catch (errAttach) {
         console.error('Ошибка при скачивании вложения из комментария:', errAttach);
       }
     }
   }
-  
+
   const prefix = isOurComment
     ? 'В задаче появился новый комментарий от технической поддержки:\n\n'
     : 'В задаче появился новый комментарий:\n\n';
-  
+
   const header =
     `<b>Задача:</b> ${combinedId}\n` +
     `<b>Источник:</b> ${source}\n` +
@@ -691,7 +713,7 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     `<b>Автор комментария:</b> ${escapeHtml(commentAuthor)}\n` +
     `<b>Статус:</b> ${escapeHtml(statusName)}\n` +
     `<b>Комментарий:</b>\n`;
-  
+
   const cacheKey = `${combinedId}:${lastComment.id}`;
   commentCache[cacheKey] = {
     header: prefix + header,
@@ -699,11 +721,11 @@ async function sendTelegramMessage(combinedId, source, issue, lastComment, autho
     fullHtml: fullCommentHtml,
     source: source
   };
-  
+
   let finalText = commentCache[cacheKey].header + shortCommentHtml;
   finalText = finalText.replace(/<span>/gi, '<tg-spoiler>').replace(/<\/span>/gi, '</tg-spoiler>');
   console.log('[DEBUG] Final message text to send:', finalText);
-  
+
   sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, finalText, {
     reply_markup: keyboard,
     parse_mode: 'HTML'
