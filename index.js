@@ -425,12 +425,18 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
           (issuetype = Office AND status = "Waiting for support") OR
           (issuetype = Prod AND status = "Waiting for Developers approval") OR
           (issuetype = Prod AND status = "Open") OR
-          (Отдел = ${departmentQuery} AND status = "Open")
+          (Отдел = ${departmentQuery} AND status = "Open") OR
+          (Отдел IS EMPTY)
         )
       `;
     } else {
-      jql = `project = SUPPORT AND (Отдел = ${departmentQuery}) AND status = "Open"`;
-    }
+  jql = `
+    project = SUPPORT AND (
+      (Отдел = ${departmentQuery} AND status = "Open") OR
+      (Отдел IS EMPTY)                        
+    )
+  `;
+}
     const response = await axios.get(url, {
       headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/json' },
       params: { jql }
