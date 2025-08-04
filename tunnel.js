@@ -19,13 +19,9 @@ async function startTunnel() {
 
     fs.writeFileSync(envPath, envContent);
 
-    // Уведомляем в Telegram
-    await axios.post(`https://api.telegram.org/bot${process.env.BOT_API_KEY}/sendMessage`, {
-        chat_id: process.env.ADMIN_CHAT_ID,
-        text: `🔗 Туннель обновлён:\n${tunnel.url}`
-    });
+    // ❌ Уведомление в Telegram убрано
 
-    // Добавляем явный перезапуск бота через pm2:
+    // Перезапуск бота через pm2
     exec('pm2 restart jirabot', (error, stdout, stderr) => {
         if (error) {
             console.error(`Ошибка перезапуска бота: ${error.message}`);
@@ -46,3 +42,5 @@ async function startTunnel() {
 }
 
 startTunnel();
+
+
