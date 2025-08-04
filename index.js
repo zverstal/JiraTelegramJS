@@ -385,7 +385,7 @@ async function fetchDutyEngineer() {
 // 5) Работа с задачами Jira: получение, сохранение и рассылка
 // ----------------------------------------------------------------------------------
 async function fetchAndStoreJiraTasks() {
-  await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL, 'Техническая поддержка');
+  await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL, 'Техническая поддержка', 'Widgets', 'QA', 'Sportsbook', 'Аналитики');
   await fetchAndStoreTasksFromJira('betone', 'https://jira.betone.team/rest/api/2/search', process.env.JIRA_PAT_BETONE, 'Техническая поддержка');
 }
 
@@ -398,9 +398,12 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
       jql = `
         project = SUPPORT AND (
           (issuetype = Infra AND status = "Open") OR
+          (issuetype = Infra AND status = "Under review") OR
           (issuetype = Office AND status = "Under review") OR
+          (issuetype = Office AND status = "Open") OR
           (issuetype = Office AND status = "Waiting for support") OR
           (issuetype = Prod AND status = "Waiting for Developers approval") OR
+          (issuetype = Prod AND status = "Open") OR
           (Отдел = ${departmentQuery} AND status = "Open")
         )
       `;
