@@ -526,12 +526,23 @@ const messageIdCache = {};
 async function sendJiraTasks(ctx) {
   const today = getMoscowTimestamp().split(' ')[0];
   const query = `
-    SELECT * FROM tasks WHERE
-      (department = "Техническая поддержка" AND (lastSent IS NULL OR lastSent < date('${today}')))
-      OR
-      (issueType IN ('Infra', 'Office', 'Prod') AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days')))
-    ORDER BY CASE WHEN department = 'Техническая поддержка' THEN 1 ELSE 2 END
-  `;
+  SELECT * FROM tasks
+  WHERE
+    (
+      (department = 'Техническая поддержка' OR department = 'Не указан')
+      AND (lastSent IS NULL OR lastSent < date('${today}'))
+    )
+    OR
+    (
+      issueType IN ('Infra', 'Office', 'Prod')
+      AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days'))
+    )
+  ORDER BY CASE
+             WHEN department = 'Техническая поддержка' THEN 1
+             WHEN department = 'Не указан'            THEN 1
+             ELSE 2
+           END
+`;
   db.all(query, [], async (err, rows) => {
     if (err) { console.error('Error fetching tasks:', err); return; }
 
