@@ -385,9 +385,30 @@ async function fetchDutyEngineer() {
 // 5) Работа с задачами Jira: получение, сохранение и рассылка
 // ----------------------------------------------------------------------------------
 async function fetchAndStoreJiraTasks() {
-  await fetchAndStoreTasksFromJira('sxl', 'https://jira.sxl.team/rest/api/2/search', process.env.JIRA_PAT_SXL, 'Техническая поддержка', 'Widgets', 'QA', 'Sportsbook', 'Аналитики');
-  await fetchAndStoreTasksFromJira('betone', 'https://jira.betone.team/rest/api/2/search', process.env.JIRA_PAT_BETONE, 'Техническая поддержка');
+  const parseDepartments = (raw) => {
+    return typeof raw === 'string'
+      ? raw.split(',').map(dep => dep.trim()).filter(Boolean)
+      : [];
+  };
+
+  const sxlDepartments = parseDepartments(process.env.JIRA_DEPARTMENTS_SXL);
+  const betoneDepartments = parseDepartments(process.env.JIRA_DEPARTMENTS_BETONE);
+
+  await fetchAndStoreTasksFromJira(
+    'sxl',
+    'https://jira.sxl.team/rest/api/2/search',
+    process.env.JIRA_PAT_SXL,
+    ...sxlDepartments
+  );
+
+  await fetchAndStoreTasksFromJira(
+    'betone',
+    'https://jira.betone.team/rest/api/2/search',
+    process.env.JIRA_PAT_BETONE,
+    ...betoneDepartments
+  );
 }
+
 
 async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
   try {
