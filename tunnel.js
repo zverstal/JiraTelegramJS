@@ -19,7 +19,6 @@ async function startTunnel() {
 
     fs.writeFileSync(envPath, envContent);
 
-    // ❌ Уведомление в Telegram убрано
 
     // Перезапуск бота через pm2
     exec('pm2 restart jirabot', (error, stdout, stderr) => {
