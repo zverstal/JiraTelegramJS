@@ -426,14 +426,14 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
           (issuetype = Prod AND status = "Waiting for Developers approval") OR
           (issuetype = Prod AND status = "Open") OR
           (Отдел = ${departmentQuery} AND status = "Open") OR
-          (Отдел IS EMPTY)
+          (Отдел IS EMPTY AND status != "Done")
         )
       `;
     } else {
   jql = `
     project = SUPPORT AND (
       (Отдел = ${departmentQuery} AND status = "Open") OR
-      (Отдел IS EMPTY)                        
+      (Отдел IS EMPTY AND status != "Done")                        
     )
   `;
 }
