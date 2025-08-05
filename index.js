@@ -443,16 +443,27 @@ async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
     });
     console.log(`${source} Jira API response:`, response.data);
     const fetchedTaskIds = response.data.issues.map(issue => `${source}-${issue.key}`);
-    await new Promise((resolve, reject) => {
+
+    if (fetchedTaskIds.length === 0) {
+      // Ничего не нашли — очищаем все записи этого source
+      await new Promise((resolve, reject) => {
+        db.run(
+          `DELETE FROM tasks WHERE source = ?`,
+          [source],
+          function (err) { err ? reject(err) : resolve(); }
+        );
+      });
+    } else {
       const placeholders = fetchedTaskIds.map(() => '?').join(',');
-      db.run(
-        `DELETE FROM tasks
-         WHERE id NOT IN (${placeholders})
-           AND source = ?`,
-        [...fetchedTaskIds, source],
-        function(err) { err ? reject(err) : resolve(); }
-      );
-    });
+      await new Promise((resolve, reject) => {
+        db.run(
+          `DELETE FROM tasks
+          WHERE source = ? AND id NOT IN (${placeholders})`,
+          [source, ...fetchedTaskIds],
+          function (err) { err ? reject(err) : resolve(); }
+        );
+      });
+    }
     for (const issue of response.data.issues) {
       const uniqueId = `${source}-${issue.key}`;
       // Извлечение данных по создателю (reporter/creator), исполнителю и статусу
