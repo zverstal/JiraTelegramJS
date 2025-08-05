@@ -529,14 +529,16 @@ async function sendJiraTasks(ctx) {
   SELECT * FROM tasks
   WHERE
     (
-      (department = 'Техническая поддержка' OR department = 'Не указан')
-      AND (lastSent IS NULL OR lastSent < date('${today}'))
-    )
-    OR
-    (
-      issueType IN ('Infra', 'Office', 'Prod')
-      AND (lastSent IS NULL OR lastSent < datetime('now', '-3 days'))
-    )
+    (department IN ('Техническая поддержка','Не указан')
+     AND status NOT IN ('Done','Closed','Resolved')
+     AND (lastSent IS NULL OR lastSent < date(?)))
+  )
+  OR
+  (
+    (issueType IN ('Infra','Office','Prod')
+     AND status NOT IN ('Done','Closed','Resolved')
+     AND (lastSent IS NULL OR lastSent < datetime('now','-3 days')))
+  )
   ORDER BY CASE
              WHEN department = 'Техническая поддержка' THEN 1
              WHEN department = 'Не указан'            THEN 1
