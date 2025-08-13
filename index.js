@@ -42,6 +42,13 @@ db.serialize(() => {
     assigneeLogin TEXT,
     status TEXT
   )`);
+  db.run(`
+  CREATE TABLE IF NOT EXISTS approval_alerts (          -- NEW
+    taskId TEXT PRIMARY KEY,
+    lastStatus TEXT,
+    lastSentAt DATETIME
+  )
+`);
   db.run(`CREATE TABLE IF NOT EXISTS user_actions (
     username TEXT,
     taskId TEXT,
