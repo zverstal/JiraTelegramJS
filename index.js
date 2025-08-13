@@ -1667,7 +1667,7 @@ cron.schedule('0 21 * * *', async () => {
   }
 }, { timezone: 'Europe/Moscow' });
 
-cron.schedule('*/5 * * * *', async () => {
+cron.schedule('* * * * *', async () => {
   try {
     console.log('[CRON] Проверка задач на благословение...');
     await checkApprovalTasks();
