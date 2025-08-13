@@ -786,7 +786,7 @@ async function sendApprovalRequest(combinedId, source, issue) { // NEW
     `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
     `<b>Статус:</b> ${escapeHtml(statusName)}\n`;
 
-  const text = `⚠️ <b>Требуется благословить задачу</b>\n\n` + header;
+  const text = `😇 <b>Требуется благословить задачу</b>\n\n` + header;
 
   await sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, text, {
     reply_markup: keyboard,
