@@ -718,8 +718,8 @@ bot.callbackQuery('refresh_tunnel', async (ctx) => {
 
 async function checkApprovalTasks() {
   try {
-    const jql = `project = SUPPORT AND status = "SUPPORT" AND (issuetype = Infra OR issuetype = Prod)`;
-    const sources = ['sxl', 'betone'];
+    const jql = `project = SUPPORT AND status = "SUPPORT" AND (issuetype = Infra OR issuetype = Prod or issuetype = Office)`;
+    const sources = ['sxl'];
 
     for (const source of sources) {
       const url = `https://jira.${source}.team/rest/api/2/search`;
