@@ -757,9 +757,24 @@ async function checkApprovalTasks() {
   }
 }
 
+function getBlessingUrl(source, combinedId) {
+  // Работает только для sxl, но можно расширить
+  if (source !== 'sxl') return null;
+  const realKey = extractRealJiraKey(combinedId);
+  return `https://jira.${source}.team/servicedesk/customer/portal/4/${realKey}`;
+}
 
-async function sendApprovalRequest(combinedId, source, issue) { // NEW
-  const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
+
+
+async function sendApprovalRequest(combinedId, source, issue) {
+  const keyboard = new InlineKeyboard()
+    .url('Перейти к задаче', getTaskUrl(source, combinedId));
+
+  // Добавляем кнопку "Благословить на портале"
+  const blessingUrl = getBlessingUrl(source, combinedId);
+  if (blessingUrl) {
+    keyboard.row().url('🙏 Благословить на портале', blessingUrl);
+  }
 
   const assigneeObj = issue.fields.assignee || null;
   const assigneeText = assigneeObj
@@ -793,6 +808,7 @@ async function sendApprovalRequest(combinedId, source, issue) { // NEW
     parse_mode: 'HTML'
   });
 }
+
 
 
 async function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
