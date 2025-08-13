@@ -716,6 +716,85 @@ bot.callbackQuery('refresh_tunnel', async (ctx) => {
   }
 });
 
+async function checkApprovalTasks() {
+  try {
+    const jql = `project = SUPPORT AND status = "SUPPORT" AND (issuetype = Infra OR issuetype = Prod)`;
+    const sources = ['sxl', 'betone'];
+
+    for (const source of sources) {
+      const url = `https://jira.${source}.team/rest/api/2/search`;
+      const pat = source === 'sxl' ? process.env.JIRA_PAT_SXL : process.env.JIRA_PAT_BETONE;
+
+      const response = await axios.get(url, {
+        headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/json' },
+        params: { jql, maxResults: 100, fields: 'assignee,reporter,creator,priority,issuetype,summary,status' }
+      });
+
+      for (const issue of response.data.issues) {
+        const taskId = `${source}-${issue.key}`;
+        const statusName = issue.fields.status?.name || '';
+        
+        db.get('SELECT lastStatus FROM approval_alerts WHERE taskId = ?', [taskId], async (err, row) => {
+          if (err) { console.error('[approval_alerts] select error:', err); return; }
+          if (!row || row.lastStatus !== statusName) {
+            try {
+              await sendApprovalRequest(taskId, source, issue); // ← функция из предыдущего примера
+              db.run(
+                `INSERT INTO approval_alerts(taskId, lastStatus, lastSentAt)
+                 VALUES(?,?,?)
+                 ON CONFLICT(taskId) DO UPDATE SET lastStatus=excluded.lastStatus, lastSentAt=excluded.lastSentAt`,
+                [taskId, statusName, getMoscowTimestamp()]
+              );
+            } catch (e) {
+              console.error('[approval_alerts] send error:', e);
+            }
+          }
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[checkApprovalTasks] error:', err);
+  }
+}
+
+
+async function sendApprovalRequest(combinedId, source, issue) { // NEW
+  const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
+
+  const assigneeObj = issue.fields.assignee || null;
+  const assigneeText = assigneeObj
+    ? getHumanReadableName(assigneeObj.name, assigneeObj.displayName || assigneeObj.name, source)
+    : 'Никто';
+
+  const reporterObj = issue.fields.reporter || issue.fields.creator || null;
+  const reporterText = reporterObj
+    ? getHumanReadableName(reporterObj.name, reporterObj.displayName || reporterObj.name, source)
+    : 'Не указан';
+
+  const priority = issue.fields.priority?.name || 'Не указан';
+  const taskType = issue.fields.issuetype?.name || 'Не указан';
+  const summary  = issue.fields.summary || 'Без названия';
+  const statusName = issue.fields.status?.name || 'Не указан';
+
+  const header =
+    `<b>Задача:</b> ${combinedId}\n` +
+    `<b>Источник:</b> ${source}\n` +
+    `<b>Приоритет:</b> ${getPriorityEmoji(priority)}\n` +
+    `<b>Тип задачи:</b> ${escapeHtml(taskType)}\n` +
+    `<b>Заголовок:</b> ${escapeHtml(summary)}\n` +
+    `<b>Исполнитель:</b> ${escapeHtml(assigneeText)}\n` +
+    `<b>Создатель задачи:</b> ${escapeHtml(reporterText)}\n` +
+    `<b>Статус:</b> ${escapeHtml(statusName)}\n`;
+
+  const text = `⚠️ <b>Требуется благословить задачу</b>\n\n` + header;
+
+  await sendMessageWithLimiter(process.env.ADMIN_CHAT_ID, text, {
+    reply_markup: keyboard,
+    parse_mode: 'HTML'
+  });
+}
+
+
 async function sendTelegramMessage(combinedId, source, issue, lastComment, authorName, department, isOurComment) {
   const keyboard = new InlineKeyboard().url('Перейти к задаче', getTaskUrl(source, combinedId));
 
@@ -1587,6 +1666,16 @@ cron.schedule('0 21 * * *', async () => {
     console.error('[CRON 21:00] Ошибка:', err);
   }
 }, { timezone: 'Europe/Moscow' });
+
+cron.schedule('*/5 * * * *', async () => {
+  try {
+    console.log('[CRON] Проверка задач на благословение...');
+    await checkApprovalTasks();
+  } catch (err) {
+    console.error('Ошибка в CRON checkApprovalTasks:', err);
+  }
+}, { timezone: 'Europe/Moscow' });
+
 
 cron.schedule('0 11 * * *', async () => {
   try {
