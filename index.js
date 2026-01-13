@@ -40,15 +40,23 @@ db.serialize(() => {
     reporterLogin TEXT,
     assignee TEXT,
     assigneeLogin TEXT,
-    status TEXT
+    status TEXT,
+
+    -- Fastik (Office / Waiting for support + доступы не пустые)
+    fastikNeeded INTEGER DEFAULT 0,           -- 0/1
+    fastikFor TEXT,                           -- customfield_12418 (value)
+    fastikRecipientsJson TEXT,                -- JSON array (display names)
+    fastikAccessJson TEXT                     -- JSON array (what access)
   )`);
+
   db.run(`
-  CREATE TABLE IF NOT EXISTS approval_alerts (          -- NEW
-    taskId TEXT PRIMARY KEY,
-    lastStatus TEXT,
-    lastSentAt DATETIME
-  )
-`);
+    CREATE TABLE IF NOT EXISTS approval_alerts (
+      taskId TEXT PRIMARY KEY,
+      lastStatus TEXT,
+      lastSentAt DATETIME
+    )
+  `);
+
   db.run(`CREATE TABLE IF NOT EXISTS user_actions (
     username TEXT,
     taskId TEXT,
@@ -56,12 +64,14 @@ db.serialize(() => {
     timestamp DATETIME,
     FOREIGN KEY(taskId) REFERENCES tasks(id)
   )`);
+
   db.run(`CREATE TABLE IF NOT EXISTS task_comments (
     taskId TEXT PRIMARY KEY,
     lastCommentId TEXT,
     assignee TEXT,
     FOREIGN KEY(taskId) REFERENCES tasks(id)
   )`);
+
   db.run(`
     CREATE TABLE IF NOT EXISTS comment_cache (
       taskId TEXT,
@@ -73,7 +83,7 @@ db.serialize(() => {
       source TEXT,
       PRIMARY KEY (taskId, commentId)
     )
-  `);  
+  `);
 });
 
 // Преобразование приоритета в эмодзи
@@ -391,6 +401,50 @@ async function fetchDutyEngineer() {
 // ----------------------------------------------------------------------------------
 // 5) Работа с задачами Jira: получение, сохранение и рассылка
 // ----------------------------------------------------------------------------------
+function toTextArray(val) {
+  if (!val) return [];
+  if (Array.isArray(val)) {
+    return val
+      .map(x => x?.displayName || x?.name || x?.value || (typeof x === "string" ? x : null))
+      .filter(Boolean);
+  }
+  if (typeof val === "object") {
+    const one = val.displayName || val.name || val.value;
+    return one ? [one] : [];
+  }
+  return [String(val)];
+}
+
+function getReporterDisplay(issue) {
+  const r = issue.fields.reporter || issue.fields.creator;
+  return r?.displayName || r?.name || "Не указан";
+}
+
+function isFastikCase(issue) {
+  const it = issue.fields.issuetype?.name;
+  const st = issue.fields.status?.name;
+  const access = issue.fields.customfield_12206;
+  const hasAccess = Array.isArray(access) ? access.length > 0 : Boolean(access);
+  return it === "Office" && st === "Waiting for support" && hasAccess;
+}
+
+function buildFastikInfo(issue) {
+  const rawFor = issue.fields.customfield_12418?.value ?? issue.fields.customfield_12418 ?? "";
+  const forLower = String(rawFor).toLowerCase();
+
+  let recipients = [];
+  if (forLower.includes("себе")) {
+    recipients = [getReporterDisplay(issue)];
+  } else if (forLower.includes("своему")) {
+    recipients = toTextArray(issue.fields.customfield_12419);
+  }
+
+  const accessList = toTextArray(issue.fields.customfield_12206);
+
+  return { forValue: String(rawFor || ""), recipients, accessList };
+}
+
+
 async function fetchAndStoreJiraTasks() {
   const parseDepartments = (raw) => {
     return typeof raw === 'string'
@@ -420,100 +474,153 @@ async function fetchAndStoreJiraTasks() {
 async function fetchAndStoreTasksFromJira(source, url, pat, ...departments) {
   try {
     console.log(`Fetching tasks from ${source} Jira...`);
+
     const departmentQuery = departments.map(dep => `"${dep}"`).join(" OR Отдел = ");
+
     let jql;
-    if (source === 'sxl') {
+    if (source === "sxl") {
       jql = `
         project = SUPPORT AND (
-          (issuetype = Infra AND status = "Open") OR
-          (issuetype = Infra AND status = "Under review") OR
+          (issuetype = Infra  AND status = "Open") OR
+          (issuetype = Infra  AND status = "Under review") OR
           (issuetype = Office AND status = "Under review") OR
           (issuetype = Office AND status = "Open") OR
           (issuetype = Office AND status = "Waiting for support") OR
-          (issuetype = Prod AND status = "Waiting for Developers approval") OR
-          (issuetype = Prod AND status = "Open") OR
+          (issuetype = Prod  AND status = "Waiting for Developers approval") OR
+          (issuetype = Prod  AND status = "Open") OR
           (Отдел = ${departmentQuery} AND status = "Open") OR
           (Отдел IS EMPTY AND status != "Done")
         )
       `;
     } else {
-  jql = `
-    project = SUPPORT AND (
-      (Отдел = ${departmentQuery} AND status = "Open") OR
-      (Отдел IS EMPTY AND status != "Done")                        
-    )
-  `;
-}
-    const response = await axios.get(url, {
-      headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/json' },
-      params: { jql }
-    });
-    console.log(`${source} Jira API response:`, response.data);
-    const fetchedTaskIds = response.data.issues.map(issue => `${source}-${issue.key}`);
+      jql = `
+        project = SUPPORT AND (
+          (Отдел = ${departmentQuery} AND status = "Open") OR
+          (Отдел IS EMPTY AND status != "Done")
+        )
+      `;
+    }
 
+    const response = await axios.get(url, {
+      headers: { Authorization: `Bearer ${pat}`, Accept: "application/json" },
+      params: {
+        jql,
+        maxResults: 200,
+        fields: [
+          "summary",
+          "priority",
+          "issuetype",
+          "status",
+          "assignee",
+          "reporter",
+          "creator",
+          "customfield_10500",
+          "customfield_10504",
+          "customfield_12418",
+          "customfield_12419",
+          "customfield_12206",
+        ].join(","),
+      },
+    });
+
+    const issues = response.data?.issues || [];
+    const fetchedTaskIds = issues.map(issue => `${source}-${issue.key}`);
+
+    // синхронизация: удаляем записи, которых больше нет в выдаче
     if (fetchedTaskIds.length === 0) {
-      // Ничего не нашли — очищаем все записи этого source
       await new Promise((resolve, reject) => {
-        db.run(
-          `DELETE FROM tasks WHERE source = ?`,
-          [source],
-          function (err) { err ? reject(err) : resolve(); }
-        );
+        db.run(`DELETE FROM tasks WHERE source = ?`, [source], err => (err ? reject(err) : resolve()));
       });
     } else {
-      const placeholders = fetchedTaskIds.map(() => '?').join(',');
+      const placeholders = fetchedTaskIds.map(() => "?").join(",");
       await new Promise((resolve, reject) => {
         db.run(
-          `DELETE FROM tasks
-          WHERE source = ? AND id NOT IN (${placeholders})`,
+          `DELETE FROM tasks WHERE source = ? AND id NOT IN (${placeholders})`,
           [source, ...fetchedTaskIds],
-          function (err) { err ? reject(err) : resolve(); }
+          err => (err ? reject(err) : resolve())
         );
       });
     }
-    for (const issue of response.data.issues) {
+
+    // upsert
+    for (const issue of issues) {
       const uniqueId = `${source}-${issue.key}`;
-      // Извлечение данных по создателю (reporter/creator), исполнителю и статусу
-      const reporterObj = issue.fields.reporter || issue.fields.creator || { name: 'Не указан', displayName: 'Не указан' };
+
+      const reporterObj =
+        issue.fields.reporter ||
+        issue.fields.creator || { name: "Не указан", displayName: "Не указан" };
+
       const reporterText = reporterObj.displayName || reporterObj.name;
-      const reporterLogin = reporterObj.name || 'Не указан';
-      const assigneeObj = issue.fields.assignee || { name: 'Не указан', displayName: 'Не указан' };
+      const reporterLogin = reporterObj.name || "Не указан";
+
+      const assigneeObj = issue.fields.assignee || { name: "Не указан", displayName: "Не указан" };
       const assigneeText = assigneeObj.displayName || assigneeObj.name;
-      const assigneeLogin = assigneeObj.name || 'Не указан';
-      const status = issue.fields.status ? issue.fields.status.name : 'Не указан';
+      const assigneeLogin = assigneeObj.name || "Не указан";
+
+      const status = issue.fields.status?.name || "Не указан";
+
+      // department
+      const department =
+        (source === "betone" && issue.fields.customfield_10504)
+          ? issue.fields.customfield_10504.value
+          : (source === "sxl" && issue.fields.customfield_10500)
+            ? issue.fields.customfield_10500.value
+            : "Не указан";
+
+      // fastik calc
+      const fastikNeeded = isFastikCase(issue);
+      const fastik = fastikNeeded ? buildFastikInfo(issue) : { fastikFor: "", recipients: [], accessList: [] };
+
       const task = {
         id: uniqueId,
-        title: issue.fields.summary,
-        priority: issue.fields.priority?.name || 'Не указан',
-        issueType: issue.fields.issuetype?.name || 'Не указан',
-        department: (
-          (source === 'betone' && issue.fields.customfield_10504)
-            ? issue.fields.customfield_10504.value
-            : ((source === 'sxl' && issue.fields.customfield_10500)
-                 ? issue.fields.customfield_10500.value
-                 : 'Не указан')
-        ),
+        title: issue.fields.summary || "",
+        priority: issue.fields.priority?.name || "Не указан",
+        issueType: issue.fields.issuetype?.name || "Не указан",
+        department,
         dateAdded: getMoscowTimestamp(),
         source,
         reporter: reporterText,
-        reporterLogin: reporterLogin,
+        reporterLogin,
         assignee: assigneeText,
-        assigneeLogin: assigneeLogin,
-        status: status
+        assigneeLogin,
+        status,
+
+        fastikNeeded: fastikNeeded ? 1 : 0,
+        fastikFor: fastik.fastikFor,
+        fastikRecipientsJson: JSON.stringify(fastik.recipients || []),
+        fastikAccessJson: JSON.stringify(fastik.accessList || []),
       };
+
       const existingTask = await new Promise((resolve, reject) => {
-        db.get('SELECT * FROM tasks WHERE id = ?', [uniqueId], (err, row) => err ? reject(err) : resolve(row));
+        db.get(`SELECT id FROM tasks WHERE id = ?`, [uniqueId], (err, row) => (err ? reject(err) : resolve(row)));
       });
+
       if (existingTask) {
         db.run(
-          `UPDATE tasks SET title = ?, priority = ?, issueType = ?, department = ?, source = ?, reporter = ?, reporterLogin = ?, assignee = ?, assigneeLogin = ?, status = ? WHERE id = ?`,
-          [task.title, task.priority, task.issueType, task.department, task.source, task.reporter, task.reporterLogin, task.assignee, task.assigneeLogin, task.status, task.id]
+          `UPDATE tasks SET
+            title = ?, priority = ?, issueType = ?, department = ?, source = ?,
+            reporter = ?, reporterLogin = ?, assignee = ?, assigneeLogin = ?, status = ?,
+            fastikNeeded = ?, fastikFor = ?, fastikRecipientsJson = ?, fastikAccessJson = ?
+           WHERE id = ?`,
+          [
+            task.title, task.priority, task.issueType, task.department, task.source,
+            task.reporter, task.reporterLogin, task.assignee, task.assigneeLogin, task.status,
+            task.fastikNeeded, task.fastikFor, task.fastikRecipientsJson, task.fastikAccessJson,
+            task.id,
+          ]
         );
       } else {
         db.run(
-          `INSERT OR REPLACE INTO tasks (id, title, priority, issueType, department, dateAdded, lastSent, source, reporter, reporterLogin, assignee, assigneeLogin, status)
-           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
-          [task.id, task.title, task.priority, task.issueType, task.department, task.dateAdded, task.source, task.reporter, task.reporterLogin, task.assignee, task.assigneeLogin, task.status]
+          `INSERT OR REPLACE INTO tasks (
+            id, title, priority, issueType, department, dateAdded, lastSent,
+            source, reporter, reporterLogin, assignee, assigneeLogin, status,
+            fastikNeeded, fastikFor, fastikRecipientsJson, fastikAccessJson
+          ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            task.id, task.title, task.priority, task.issueType, task.department, task.dateAdded,
+            task.source, task.reporter, task.reporterLogin, task.assignee, task.assigneeLogin, task.status,
+            task.fastikNeeded, task.fastikFor, task.fastikRecipientsJson, task.fastikAccessJson,
+          ]
         );
       }
     }
@@ -542,46 +649,50 @@ async function getJiraTaskDetails(source, combinedId) {
 const messageIdCache = {};
 
 async function sendJiraTasks(ctx) {
-  const today = getMoscowTimestamp().split(' ')[0];
+  const today = getMoscowTimestamp().split(" ")[0];
+
   const query = `
-  SELECT * FROM tasks
-  WHERE
-    (
-    (department IN ('Техническая поддержка','Не указан')
-     AND status NOT IN ('Done','Closed','Resolved')
-     AND (lastSent IS NULL OR lastSent < date(?)))
-  )
-  OR
-  (
-    (issueType IN ('Infra','Office','Prod')
-     AND status NOT IN ('Done','Closed','Resolved')
-     AND (lastSent IS NULL OR lastSent < datetime('now','-3 days')))
-  )
-  ORDER BY CASE
-             WHEN department = 'Техническая поддержка' THEN 1
-             WHEN department = 'Не указан'            THEN 1
-             ELSE 2
-           END
-`;
-  db.all(query, [], async (err, rows) => {
-    if (err) { console.error('Error fetching tasks:', err); return; }
+    SELECT * FROM tasks
+    WHERE
+      (
+        (department IN ('Техническая поддержка','Не указан')
+         AND status NOT IN ('Done','Closed','Resolved')
+         AND (lastSent IS NULL OR lastSent < date(?)))
+      )
+      OR
+      (
+        (issueType IN ('Infra','Office','Prod')
+         AND status NOT IN ('Done','Closed','Resolved')
+         AND (lastSent IS NULL OR lastSent < datetime('now','-3 days')))
+      )
+    ORDER BY CASE
+      WHEN department = 'Техническая поддержка' THEN 1
+      WHEN department = 'Не указан'            THEN 1
+      ELSE 2
+    END
+  `;
+
+  db.all(query, [today], async (err, rows) => {
+    if (err) {
+      console.error("Error fetching tasks:", err);
+      return;
+    }
 
     for (const task of rows) {
       const keyboard = new InlineKeyboard();
 
       if (task.department === "Техническая поддержка") {
         keyboard
-          .text('Взять в работу', `take_task:${task.id}`)
-          .url('Перейти к задаче', getTaskUrl(task.source, task.id))
-          .text('⬇ Подробнее', `toggle_description:${task.id}`);
-      } else if (['Infra', 'Office', 'Prod'].includes(task.issueType)) {
+          .text("Взять в работу", `take_task:${task.id}`)
+          .url("Перейти к задаче", getTaskUrl(task.source, task.id))
+          .text("⬇ Подробнее", `toggle_description:${task.id}`);
+      } else if (["Infra", "Office", "Prod"].includes(task.issueType)) {
         keyboard
-          .url('Перейти к задаче', getTaskUrl(task.source, task.id))
-          .text('⬇ Подробнее', `toggle_description:${task.id}`);
+          .url("Перейти к задаче", getTaskUrl(task.source, task.id))
+          .text("⬇ Подробнее", `toggle_description:${task.id}`);
       }
 
-      // Экранированный текст сообщения
-      const messageText =
+      let messageText =
         `<b>Задача:</b> ${escapeHtml(task.id)}\n` +
         `<b>Источник:</b> ${escapeHtml(task.source)}\n` +
         `<b>Ссылка:</b> <a href="${escapeHtml(getTaskUrl(task.source, task.id))}">Открыть в Jira</a>\n` +
@@ -592,18 +703,31 @@ async function sendJiraTasks(ctx) {
         `<b>Создатель задачи:</b> ${escapeHtml(getHumanReadableName(task.reporterLogin, task.reporter, task.source))}\n` +
         `<b>Статус:</b> ${escapeHtml(task.status)}`;
 
-      // Отправляем сообщение с HTML-разметкой
-      const sentMessage = await ctx.reply(messageText, { 
+      // --- FASTIK BLOCK ---
+      if (Number(task.fastikNeeded) === 1) {
+        let recipients = [];
+        let accessList = [];
+        try { recipients = JSON.parse(task.fastikRecipientsJson || "[]"); } catch {}
+        try { accessList = JSON.parse(task.fastikAccessJson || "[]"); } catch {}
+
+        const who = recipients.join(", ") || "—";
+        const what = accessList.join(", ") || "—";
+        const whoBy = task.fastikFor ? ` (${escapeHtml(task.fastikFor)})` : "";
+
+        messageText +=
+          `\n\n<b>⚡️ Нужно по фастику выдать доступ</b>\n` +
+          `<b>Кому:</b> ${escapeHtml(who)}${whoBy}\n` +
+          `<b>Доступ:</b> ${escapeHtml(what)}`;
+      }
+
+      const sentMessage = await ctx.reply(messageText, {
         reply_markup: keyboard,
-        parse_mode: "HTML"
+        parse_mode: "HTML",
       });
 
-      // Сохраняем message_id
       messageIdCache[task.id] = sentMessage.message_id;
 
-      // Обновляем в базе lastSent
-      const moscowTimestamp = getMoscowTimestamp();
-      db.run('UPDATE tasks SET lastSent = ? WHERE id = ?', [moscowTimestamp, task.id]);
+      db.run(`UPDATE tasks SET lastSent = ? WHERE id = ?`, [getMoscowTimestamp(), task.id]);
     }
   });
 }
@@ -1751,12 +1875,59 @@ bot.command('forcestart', async (ctx) => {
   await ctx.reply('♻️ Все задачи были перезапущены (и расписание перечитано).');
 });
 
+
+// ----------------------------------------------------------------------------------
+// DB MIGRATION: добавить fastik-поля в уже существующую таблицу tasks
+// ----------------------------------------------------------------------------------
+function runAsync(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) return reject(err);
+      resolve(this);
+    });
+  });
+}
+
+function allAsync(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows);
+    });
+  });
+}
+
+async function ensureTasksColumns() {
+  // читаем текущие колонки
+  const cols = await allAsync(`PRAGMA table_info(tasks)`);
+  const colNames = new Set(cols.map(c => String(c.name).toLowerCase()));
+
+  const toAdd = [
+    { name: "fastikNeeded", type: "INTEGER", def: "0" },
+    { name: "fastikFor", type: "TEXT", def: null },
+    { name: "fastikRecipientsJson", type: "TEXT", def: null },
+    { name: "fastikAccessJson", type: "TEXT", def: null },
+  ];
+
+  for (const c of toAdd) {
+    if (colNames.has(c.name.toLowerCase())) continue;
+
+    const defSql = c.def === null ? "" : ` DEFAULT ${c.def}`;
+    const sql = `ALTER TABLE tasks ADD COLUMN ${c.name} ${c.type}${defSql}`;
+    console.log("[DB MIGRATION]", sql);
+    await runAsync(sql);
+  }
+
+  console.log("[DB MIGRATION] tasks columns OK");
+}
+
 // ----------------------------------------------------------------------------------
 // 12) Инициализация при старте
 // ----------------------------------------------------------------------------------
 async function initializeBotTasks() {
   try {
     console.log('[BOT INIT] Запуск задач...');
+    await ensureTasksColumns(); // ✅ добавили миграцию сюда
     await buildPageMapForSchedules();
     const now = getMoscowDateTime();
     await loadScheduleForMonthYear(now.year, now.month);
