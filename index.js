@@ -441,8 +441,9 @@ function buildFastikInfo(issue) {
 
   const accessList = toTextArray(issue.fields.customfield_12206);
 
-  return { forValue: String(rawFor || ""), recipients, accessList };
+  return { fastikFor: String(rawFor || ""), recipients, accessList };
 }
+
 
 
 async function fetchAndStoreJiraTasks() {
