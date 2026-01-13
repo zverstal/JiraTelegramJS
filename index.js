@@ -649,12 +649,22 @@ async function getJiraTaskDetails(source, combinedId) {
 // Глобальный кэш для хранения message_id по task.id
 const messageIdCache = {};
 
+// ----------------------------------------------------------------------------------
+// sendJiraTasks: SELECT + UPDATE (с отдельной рассылкой fastik)
+// ----------------------------------------------------------------------------------
 async function sendJiraTasks(ctx) {
   const today = getMoscowTimestamp().split(" ")[0];
 
   const query = `
     SELECT * FROM tasks
     WHERE
+      -- ✅ FASTIK: шлём независимо от lastSent (пример: раз в 12 часов)
+      (
+        fastikNeeded = 1
+        AND status = "Waiting for support"
+        AND (fastikLastSent IS NULL OR fastikLastSent < datetime('now','-12 hours'))
+      )
+      OR
       (
         (department IN ('Техническая поддержка','Не указан')
          AND status NOT IN ('Done','Closed','Resolved')
@@ -666,11 +676,13 @@ async function sendJiraTasks(ctx) {
          AND status NOT IN ('Done','Closed','Resolved')
          AND (lastSent IS NULL OR lastSent < datetime('now','-3 days')))
       )
-    ORDER BY CASE
-      WHEN department = 'Техническая поддержка' THEN 1
-      WHEN department = 'Не указан'            THEN 1
-      ELSE 2
-    END
+    ORDER BY
+      CASE WHEN fastikNeeded = 1 AND status = "Waiting for support" THEN 0 ELSE 1 END,
+      CASE
+        WHEN department = 'Техническая поддержка' THEN 1
+        WHEN department = 'Не указан'            THEN 1
+        ELSE 2
+      END
   `;
 
   db.all(query, [today], async (err, rows) => {
@@ -705,7 +717,8 @@ async function sendJiraTasks(ctx) {
         `<b>Статус:</b> ${escapeHtml(task.status)}`;
 
       // --- FASTIK BLOCK ---
-      if (Number(task.fastikNeeded) === 1) {
+      const isFastik = Number(task.fastikNeeded) === 1 && task.status === "Waiting for support";
+      if (isFastik) {
         let recipients = [];
         let accessList = [];
         try { recipients = JSON.parse(task.fastikRecipientsJson || "[]"); } catch {}
@@ -728,10 +741,17 @@ async function sendJiraTasks(ctx) {
 
       messageIdCache[task.id] = sentMessage.message_id;
 
+      // ✅ UPDATE: обычный lastSent — всегда
       db.run(`UPDATE tasks SET lastSent = ? WHERE id = ?`, [getMoscowTimestamp(), task.id]);
+
+      // ✅ UPDATE: fastikLastSent — только если это fastik-рассылка
+      if (isFastik) {
+        db.run(`UPDATE tasks SET fastikLastSent = ? WHERE id = ?`, [getMoscowTimestamp(), task.id]);
+      }
     }
   });
 }
+
 
 
 // ----------------------------------------------------------------------------------
@@ -1908,6 +1928,7 @@ async function ensureTasksColumns() {
     { name: "fastikFor", type: "TEXT", def: null },
     { name: "fastikRecipientsJson", type: "TEXT", def: null },
     { name: "fastikAccessJson", type: "TEXT", def: null },
+    { name: "fastikLastSent", type: "DATETIME", def: null },
   ];
 
   for (const c of toAdd) {
